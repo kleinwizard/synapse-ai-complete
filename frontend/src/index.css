@@ -1,0 +1,148 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Synapse Design System - Dark Theme with Electric Blue Accents */
+
+@layer base {
+  :root {
+    /* Synapse Brand Colors */
+    --synapse-background: 220 15% 10%;  /* Dark charcoal #1A1B26 */
+    --synapse-surface: 220 12% 14%;     /* Slightly lighter surface */
+    --synapse-border: 220 10% 20%;      /* Subtle borders #33343E */
+    
+    --synapse-primary: 214 88% 48%;      /* Professional blue #2563eb */
+    --synapse-primary-hover: 214 88% 56%;
+    --synapse-primary-foreground: 0 0% 100%;
+    
+    --synapse-text: 0 0% 94%;           /* Off-white #F0F0F0 */
+    --synapse-text-bright: 0 0% 100%;   /* Bright white for headings */
+    --synapse-text-muted: 220 5% 65%;   /* Muted text */
+    
+    --synapse-success: 142 76% 36%;     /* Success green */
+    --synapse-warning: 38 92% 50%;      /* Warning orange */
+    --synapse-error: 0 84% 60%;         /* Error red */
+    
+    /* Component specific */
+    --synapse-input: 220 12% 16%;
+    --synapse-input-border: 220 10% 25%;
+    --synapse-card: 220 12% 12%;
+    --synapse-hover: 220 12% 18%;
+    
+    /* Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(var(--synapse-primary)), hsl(214 100% 70%));
+    --gradient-hero: linear-gradient(135deg, hsl(var(--synapse-background)), hsl(220 15% 8%));
+    
+    /* Shadows */
+    --shadow-glow: 0 0 30px hsl(var(--synapse-primary) / 0.3);
+    --shadow-card: 0 4px 20px hsl(220 20% 5% / 0.5);
+    
+    /* Transitions */
+    --transition-smooth: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-bounce: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+    
+    /* Legacy mappings for shadcn compatibility */
+    --background: var(--synapse-background);
+    --foreground: var(--synapse-text);
+    --card: var(--synapse-card);
+    --card-foreground: var(--synapse-text);
+    --popover: var(--synapse-surface);
+    --popover-foreground: var(--synapse-text);
+    --primary: var(--synapse-primary);
+    --primary-foreground: var(--synapse-primary-foreground);
+    --secondary: var(--synapse-surface);
+    --secondary-foreground: var(--synapse-text);
+    --muted: var(--synapse-surface);
+    --muted-foreground: var(--synapse-text-muted);
+    --accent: var(--synapse-primary);
+    --accent-foreground: var(--synapse-primary-foreground);
+    --destructive: var(--synapse-error);
+    --destructive-foreground: var(--synapse-primary-foreground);
+    --border: var(--synapse-border);
+    --input: var(--synapse-input);
+    --ring: var(--synapse-primary);
+    --radius: 0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-inter antialiased;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-synapse-surface;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-synapse-border rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-synapse-text-muted;
+  }
+}
+
+@layer components {
+  /* Hero button variant */
+  .btn-hero {
+    @apply bg-synapse-primary hover:bg-synapse-primary-hover text-synapse-primary-foreground font-semibold px-8 py-4 rounded-xl transition-all duration-200 shadow-lg hover:shadow-glow hover:scale-105;
+  }
+  
+  /* Card component */
+  .synapse-card {
+    @apply bg-synapse-card border border-synapse-border rounded-xl p-6 transition-all duration-200 hover:border-synapse-primary/30 hover:bg-synapse-hover;
+  }
+  
+  /* Input styling */
+  .synapse-input {
+    @apply bg-synapse-input border border-synapse-input-border text-synapse-text placeholder:text-synapse-text-muted rounded-lg px-4 py-3 transition-all duration-200 focus:border-synapse-primary focus:ring-2 focus:ring-synapse-primary/20;
+  }
+  
+  /* Power level selector */
+  .power-selector {
+    @apply flex bg-synapse-surface border border-synapse-border rounded-lg p-1;
+  }
+  
+  .power-option {
+    @apply flex-1 px-4 py-2 text-center text-sm font-medium text-synapse-text-muted transition-all duration-200 rounded-md cursor-pointer hover:text-synapse-text;
+  }
+  
+  .power-option.active {
+    @apply bg-synapse-primary text-synapse-primary-foreground shadow-sm;
+  }
+  
+  /* Tab styling */
+  .tab-button {
+    @apply px-4 py-2 text-sm font-medium text-synapse-text-muted transition-all duration-200 border-b-2 border-transparent hover:text-synapse-text hover:border-synapse-border;
+  }
+  
+  .tab-button.active {
+    @apply text-synapse-primary border-synapse-primary;
+  }
+  
+  /* Pricing card variants */
+  .pricing-card {
+    @apply bg-synapse-card border border-synapse-border rounded-xl p-8 transition-all duration-200 hover:border-synapse-primary/30;
+  }
+  
+  .pricing-card.current {
+    @apply border-synapse-primary bg-synapse-primary/5;
+  }
+  
+  /* Loading spinner */
+  .spinner {
+    @apply animate-spin rounded-full h-4 w-4 border-2 border-synapse-border border-t-synapse-primary;
+  }
+}
