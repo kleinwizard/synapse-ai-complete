@@ -34,7 +34,7 @@ const AuthPage = ({ onAuthSuccess }: AuthPageProps) => {
             password: formData.password
           };
 
-      const response = await fetch(`http://localhost:8000${endpoint}`, {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}${endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -65,7 +65,7 @@ const AuthPage = ({ onAuthSuccess }: AuthPageProps) => {
     setIsLoading(true);
     
     try {
-      window.location.href = `http://localhost:8000/auth/oauth/${provider}`;
+      window.location.href = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/auth/oauth/${provider}`;
     } catch (error) {
       console.error('OAuth authentication failed:', error);
       alert(`OAuth with ${provider} failed`);

@@ -1,7 +1,9 @@
 import os
 import time
+import hmac
+import hashlib
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
@@ -9,6 +11,8 @@ from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 import psycopg
 import stripe
+import sendgrid
+from sendgrid.helpers.mail import Mail
 from .prompt_builder import SynapsePromptBuilder, PromptData
 from .llm_router import select_model, get_model_info, validate_routing_request
 from .execution_engine import get_execution_engine, initialize_execution_engine
@@ -30,13 +34,13 @@ from .database import (
 
 app = FastAPI(title="SaaS Boilerplate API", version="1.0.0")
 
-# Disable CORS. Do not remove this for full-stack development.
+cors_origins = os.getenv("CORS_ORIGIN_URL", "*").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allows all origins
+    allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Allows all methods
-    allow_headers=["*"],  # Allows all headers
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.on_event("startup")
@@ -48,6 +52,7 @@ async def startup_event():
     openai_api_key = os.getenv("OPENAI_API_KEY")
     anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
     stripe_secret_key = os.getenv("STRIPE_SECRET_KEY")
+    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
     
     if openai_api_key or anthropic_api_key:
         await initialize_execution_engine(openai_api_key, anthropic_api_key)
@@ -59,6 +64,11 @@ async def startup_event():
         print("Stripe initialized successfully.")
     else:
         print("Warning: No Stripe secret key found. Billing functionality will be limited.")
+    
+    if sendgrid_api_key:
+        print("SendGrid initialized successfully.")
+    else:
+        print("Warning: No SendGrid API key found. Email functionality will be limited.")
 
 class OptimizeRequest(BaseModel):
     prompt: str
@@ -104,6 +114,13 @@ class CreditCheckoutRequest(BaseModel):
     success_url: Optional[str] = None
     cancel_url: Optional[str] = None
 
+class ForgotPasswordRequest(BaseModel):
+    email: str
+
+class ResetPasswordRequest(BaseModel):
+    token: str
+    new_password: str
+
 @app.get("/healthz")
 async def healthz():
     return {"status": "ok"}
@@ -127,6 +144,8 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     
     password_hash = hash_password(user_data.password)
     user = create_user(db, user_data, password_hash)
+    
+    await send_welcome_email(user.email, user.first_name or user.username)
     
     access_token = create_access_token(data={"sub": user.id})
     
@@ -312,8 +331,8 @@ async def create_stripe_checkout(
                 'quantity': 1,
             }],
             mode='subscription',
-            success_url=checkout_data.success_url or 'http://localhost:5173/success',
-            cancel_url=checkout_data.cancel_url or 'http://localhost:5173/cancel',
+            success_url=checkout_data.success_url or f"{os.getenv('CORS_ORIGIN_URL', 'http://localhost:5173')}/success",
+            cancel_url=checkout_data.cancel_url or f"{os.getenv('CORS_ORIGIN_URL', 'http://localhost:5173')}/cancel",
             customer_email=current_user.email,
             metadata={
                 'user_id': current_user.id,
@@ -350,8 +369,8 @@ async def create_credit_checkout(
                 'quantity': 1,
             }],
             mode='payment',
-            success_url=checkout_data.success_url or 'http://localhost:5173/success',
-            cancel_url=checkout_data.cancel_url or 'http://localhost:5173/cancel',
+            success_url=checkout_data.success_url or f"{os.getenv('CORS_ORIGIN_URL', 'http://localhost:5173')}/success",
+            cancel_url=checkout_data.cancel_url or f"{os.getenv('CORS_ORIGIN_URL', 'http://localhost:5173')}/cancel",
             customer_email=current_user.email,
             metadata={
                 'user_id': current_user.id,
@@ -376,7 +395,7 @@ async def create_customer_portal(
     try:
         session = stripe.billing_portal.Session.create(
             customer=current_user.email,
-            return_url='http://localhost:5173/settings',
+            return_url=f"{os.getenv('CORS_ORIGIN_URL', 'http://localhost:5173')}/settings",
         )
         
         return {"portal_url": session.url}
@@ -719,3 +738,201 @@ async def get_prompt_responses_endpoint(prompt_id: int, db: Session = Depends(ge
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to retrieve prompt responses: {str(e)}")
+
+async def send_welcome_email(email: str, name: str):
+    """Send welcome email to new user."""
+    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+    if not sendgrid_api_key:
+        print(f"Warning: Cannot send welcome email to {email} - SendGrid API key not configured")
+        return
+    
+    try:
+        sg = sendgrid.SendGridAPIClient(api_key=sendgrid_api_key)
+        
+        message = Mail(
+            from_email='noreply@synapse-ai.com',
+            to_emails=email,
+            subject='Welcome to Synapse AI!',
+            html_content=f'''
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h1 style="color: #6366f1;">Welcome to Synapse AI, {name}!</h1>
+                <p>Thank you for joining Synapse AI. We're excited to help you transform your ideas into expert prompts.</p>
+                <p>Here's what you can do with Synapse AI:</p>
+                <ul>
+                    <li>Use the power level selector to choose the right AI model for your task</li>
+                    <li>Monitor your credit usage and upgrade your plan as needed</li>
+                    <li>View your results in organized tabs for easy comparison</li>
+                </ul>
+                <p>Get started by logging into your workspace and exploring the features!</p>
+                <p>Best regards,<br>The Synapse AI Team</p>
+            </div>
+            '''
+        )
+        
+        response = sg.send(message)
+        print(f"Welcome email sent to {email} - Status: {response.status_code}")
+        
+    except Exception as e:
+        print(f"Error sending welcome email to {email}: {str(e)}")
+
+async def send_password_reset_email(email: str, reset_token: str):
+    """Send password reset email."""
+    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+    if not sendgrid_api_key:
+        print(f"Warning: Cannot send password reset email to {email} - SendGrid API key not configured")
+        return
+    
+    try:
+        sg = sendgrid.SendGridAPIClient(api_key=sendgrid_api_key)
+        
+        reset_url = f"{os.getenv('CORS_ORIGIN_URL', 'http://localhost:5173')}/reset-password?token={reset_token}"
+        
+        message = Mail(
+            from_email='noreply@synapse-ai.com',
+            to_emails=email,
+            subject='Reset Your Synapse AI Password',
+            html_content=f'''
+            <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+                <h1 style="color: #6366f1;">Reset Your Password</h1>
+                <p>You requested to reset your password for your Synapse AI account.</p>
+                <p>Click the link below to reset your password:</p>
+                <p><a href="{reset_url}" style="background-color: #6366f1; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; display: inline-block;">Reset Password</a></p>
+                <p>This link will expire in 1 hour for security reasons.</p>
+                <p>If you didn't request this password reset, please ignore this email.</p>
+                <p>Best regards,<br>The Synapse AI Team</p>
+            </div>
+            '''
+        )
+        
+        response = sg.send(message)
+        print(f"Password reset email sent to {email} - Status: {response.status_code}")
+        
+    except Exception as e:
+        print(f"Error sending password reset email to {email}: {str(e)}")
+
+@app.post("/auth/forgot-password")
+async def forgot_password(request: ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Send password reset email."""
+    user = get_user_by_email(db, request.email)
+    if not user:
+        return {"message": "If the email exists, a password reset link has been sent"}
+    
+    reset_token = create_access_token(
+        data={"sub": user.id, "type": "password_reset"}, 
+        expires_delta=timedelta(hours=1)
+    )
+    
+    await send_password_reset_email(user.email, reset_token)
+    
+    return {"message": "If the email exists, a password reset link has been sent"}
+
+@app.post("/auth/reset-password")
+async def reset_password(request: ResetPasswordRequest, db: Session = Depends(get_db)):
+    """Reset password using token."""
+    try:
+        from app.auth import verify_token
+        payload = verify_token(request.token)
+        
+        if payload.get("type") != "password_reset":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid reset token"
+            )
+        
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid reset token"
+            )
+        
+        new_password_hash = hash_password(request.new_password)
+        updated_user = update_user_password(db, user_id, new_password_hash)
+        
+        if not updated_user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+        
+        return {"message": "Password reset successfully"}
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired reset token"
+        )
+
+@app.post("/webhooks/stripe")
+async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
+    """Handle Stripe webhook events."""
+    payload = await request.body()
+    sig_header = request.headers.get('stripe-signature')
+    webhook_secret = os.getenv('STRIPE_WEBHOOK_SECRET')
+    
+    if not webhook_secret:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Webhook secret not configured"
+        )
+    
+    try:
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, webhook_secret
+        )
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid payload"
+        )
+    except stripe.error.SignatureVerificationError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid signature"
+        )
+    
+    if event['type'] == 'checkout.session.completed':
+        session = event['data']['object']
+        
+        user_id = session.get('metadata', {}).get('user_id')
+        if not user_id:
+            print(f"Warning: No user_id in session metadata: {session.get('id')}")
+            return {"status": "ok"}
+        
+        if session.get('mode') == 'subscription':
+            plan_id = session.get('metadata', {}).get('plan_id')
+            if plan_id:
+                from app.database import get_user_by_id, update_user_subscription
+                user = get_user_by_id(db, user_id)
+                if user:
+                    update_user_subscription(db, user_id, plan_id)
+                    print(f"Updated user {user_id} subscription to {plan_id}")
+                    
+                    create_billing_record(db, {
+                        'user_id': user_id,
+                        'amount': session.get('amount_total', 0) / 100,
+                        'currency': session.get('currency', 'usd'),
+                        'description': f'Subscription: {plan_id}',
+                        'stripe_session_id': session.get('id'),
+                        'status': 'completed'
+                    })
+        
+        elif session.get('mode') == 'payment':
+            credits = session.get('metadata', {}).get('credits')
+            if credits:
+                from app.database import get_user_by_id, add_user_credits
+                user = get_user_by_id(db, user_id)
+                if user:
+                    add_user_credits(db, user_id, int(credits))
+                    print(f"Added {credits} credits to user {user_id}")
+                    
+                    create_billing_record(db, {
+                        'user_id': user_id,
+                        'amount': session.get('amount_total', 0) / 100,
+                        'currency': session.get('currency', 'usd'),
+                        'description': f'Credits: {credits}',
+                        'stripe_session_id': session.get('id'),
+                        'status': 'completed'
+                    })
+    
+    return {"status": "ok"}

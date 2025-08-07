@@ -53,7 +53,7 @@ const Workspace = ({ user, onNavigate }: WorkspaceProps) => {
     try {
       const token = localStorage.getItem('token');
       if (token) {
-        await fetch('http://localhost:8000/auth/logout', {
+        await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/auth/logout`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -78,7 +78,7 @@ const Workspace = ({ user, onNavigate }: WorkspaceProps) => {
         const token = localStorage.getItem('token');
         if (!token) return;
 
-        const response = await fetch('http://localhost:8000/users/me', {
+        const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/users/me`, {
           headers: {
             'Authorization': `Bearer ${token}`,
           },
