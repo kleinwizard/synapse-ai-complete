@@ -5,6 +5,7 @@ import Workspace from '@/components/Workspace';
 import BillingPage from '@/components/BillingPage';
 import SubscriptionPage from '@/components/SubscriptionPage';
 import SettingsPage from '@/components/SettingsPage';
+import WelcomeModal from '@/components/WelcomeModal';
 
 interface User {
   id: string;
@@ -21,10 +22,16 @@ const Index = () => {
     const token = localStorage.getItem('token');
     return savedUser && token ? JSON.parse(savedUser) : null;
   });
+  const [showWelcomeModal, setShowWelcomeModal] = useState(false);
 
   const handleAuthSuccess = (userData: User) => {
     setUser(userData);
     setCurrentPage('workspace');
+    
+    const onboardingCompleted = localStorage.getItem('onboarding_completed');
+    if (!onboardingCompleted) {
+      setShowWelcomeModal(true);
+    }
   };
 
   const handleSignOut = () => {
@@ -63,7 +70,15 @@ const Index = () => {
 
   // Main Workspace
   if (currentPage === 'workspace') {
-    return <Workspace user={user} onNavigate={handleNavigation} />;
+    return (
+      <>
+        <Workspace user={user} onNavigate={handleNavigation} />
+        <WelcomeModal 
+          isOpen={showWelcomeModal} 
+          onClose={() => setShowWelcomeModal(false)} 
+        />
+      </>
+    );
   }
 
   // Subscription Page

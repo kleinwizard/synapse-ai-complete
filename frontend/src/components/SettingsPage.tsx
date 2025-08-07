@@ -68,7 +68,7 @@ const SettingsPage = ({ user, onNavigate }: SettingsPageProps) => {
         throw new Error('Authentication required');
       }
 
-      const response = await fetch('http://localhost:8000/users/profile', {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/users/profile`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -110,7 +110,7 @@ const SettingsPage = ({ user, onNavigate }: SettingsPageProps) => {
         throw new Error('Authentication required');
       }
 
-      const response = await fetch('http://localhost:8000/users/password', {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/users/password`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -151,7 +151,7 @@ const SettingsPage = ({ user, onNavigate }: SettingsPageProps) => {
         throw new Error('Authentication required');
       }
 
-      const response = await fetch('http://localhost:8000/users/api-keys', {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/users/api-keys`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

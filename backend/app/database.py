@@ -38,6 +38,7 @@ class User(Base):
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
     subscription_tier = Column(String(50), default='free')
+    credits = Column(Integer, default=100)
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_login = Column(DateTime(timezone=True))
@@ -344,13 +345,15 @@ def revoke_api_key(db: Session, user_id: int, key_id: int) -> bool:
         return True
     return False
 
-def create_billing_record(db: Session, user_id: int, record_type: str, amount: float, **kwargs) -> BillingRecord:
+def create_billing_record(db: Session, billing_data: dict) -> BillingRecord:
     """Create a billing record."""
     db_billing = BillingRecord(
-        user_id=user_id,
-        record_type=record_type,
-        amount=amount,
-        **kwargs
+        user_id=billing_data.get('user_id'),
+        record_type=billing_data.get('description', 'payment'),
+        amount=billing_data.get('amount'),
+        currency=billing_data.get('currency', 'usd'),
+        stripe_session_id=billing_data.get('stripe_session_id'),
+        status=billing_data.get('status', 'completed')
     )
     db.add(db_billing)
     db.commit()
@@ -404,3 +407,22 @@ def update_prompt_status(db: Session, prompt_id: int, status: str, completed_at:
         db.commit()
         db.refresh(prompt)
     return prompt
+
+def add_user_credits(db: Session, user_id: int, credits: int):
+    """Add credits to user account."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        current_credits = getattr(user, 'credits', 0) or 0
+        user.credits = current_credits + credits
+        db.commit()
+        db.refresh(user)
+    return user
+
+def update_user_subscription(db: Session, user_id: int, plan_id: str):
+    """Update user subscription plan."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if user:
+        user.subscription_tier = plan_id
+        db.commit()
+        db.refresh(user)
+    return user

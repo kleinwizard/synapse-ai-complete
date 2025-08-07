@@ -631,8 +631,8 @@ This comprehensive framework ensures maximum engagement, conversion optimization
               Synapse
             </div>
             <div className="flex space-x-8 text-sm text-synapse-text-muted">
-              <a href="#" className="hover:text-synapse-text transition-colors">Privacy</a>
-              <a href="#" className="hover:text-synapse-text transition-colors">Terms</a>
+              <a href="/privacy" className="hover:text-synapse-text transition-colors">Privacy</a>
+              <a href="/terms" className="hover:text-synapse-text transition-colors">Terms</a>
               <a href="#" className="hover:text-synapse-text transition-colors">Support</a>
               <a href="#" className="hover:text-synapse-text transition-colors">API Docs</a>
             </div>

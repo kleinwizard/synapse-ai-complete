@@ -81,7 +81,7 @@ const BillingPage = ({ user, onNavigate }: BillingPageProps) => {
         throw new Error('Authentication required');
       }
 
-      const response = await fetch('http://localhost:8000/stripe/create-checkout', {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/stripe/create-checkout`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -116,7 +116,7 @@ const BillingPage = ({ user, onNavigate }: BillingPageProps) => {
         throw new Error('Authentication required');
       }
 
-      const response = await fetch('http://localhost:8000/stripe/create-credit-checkout', {
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/stripe/create-credit-checkout`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
