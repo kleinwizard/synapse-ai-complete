@@ -11,20 +11,89 @@ from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import JSON
 from sqlalchemy.sql import func
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 
+# Import validation functions (will be added after validator creation to avoid circular import)
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./synapse_ai.db")
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {})
+# Production database configuration
+def create_database_engine():
+    """Create database engine with production-ready configuration."""
+    if DATABASE_URL.startswith("postgresql://"):
+        # PostgreSQL production configuration
+        engine_args = {
+            "pool_size": int(os.getenv("DB_POOL_SIZE", "10")),
+            "max_overflow": int(os.getenv("DB_MAX_OVERFLOW", "20")),
+            "pool_pre_ping": True,  # Validate connections before use
+            "pool_recycle": int(os.getenv("DB_POOL_RECYCLE", "3600")),  # Recycle connections after 1 hour
+            "connect_args": {
+                "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
+                "command_timeout": int(os.getenv("DB_COMMAND_TIMEOUT", "30")),
+                "application_name": "synapse_ai"
+            }
+        }
+        
+        # Add SSL configuration for production
+        if os.getenv("DB_REQUIRE_SSL", "false").lower() == "true":
+            engine_args["connect_args"]["sslmode"] = "require"
+            
+    elif DATABASE_URL.startswith("sqlite"):
+        # SQLite development configuration
+        engine_args = {
+            "connect_args": {
+                "check_same_thread": False,
+                "timeout": int(os.getenv("DB_SQLITE_TIMEOUT", "30"))
+            }
+        }
+    else:
+        # Generic configuration
+        engine_args = {}
+    
+    return create_engine(DATABASE_URL, **engine_args)
+
+engine = create_database_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 def get_db():
+    """Get database session with error handling."""
     db = SessionLocal()
     try:
         yield db
+    except Exception as e:
+        # Log database errors
+        print(f"Database session error: {e}")
+        db.rollback()
+        raise
     finally:
         db.close()
+
+def check_database_health() -> dict:
+    """Check database connectivity and health."""
+    try:
+        db = SessionLocal()
+        
+        # Test basic connectivity
+        db.execute(func.now() if DATABASE_URL.startswith("postgresql") else "SELECT 1")
+        
+        # Get connection info
+        result = {
+            "status": "healthy",
+            "database_type": "postgresql" if DATABASE_URL.startswith("postgresql") else "sqlite",
+            "pool_size": engine.pool.size() if hasattr(engine.pool, 'size') else None,
+            "pool_checked_in": engine.pool.checkedin() if hasattr(engine.pool, 'checkedin') else None,
+            "pool_checked_out": engine.pool.checkedout() if hasattr(engine.pool, 'checkedout') else None,
+        }
+        
+        db.close()
+        return result
+        
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "database_type": "postgresql" if DATABASE_URL.startswith("postgresql") else "sqlite"
+        }
 
 class User(Base):
     __tablename__ = "users"
@@ -39,6 +108,7 @@ class User(Base):
     is_verified = Column(Boolean, default=False)
     subscription_tier = Column(String(50), default='free')
     credits = Column(Integer, default=100)
+    use_local_ollama = Column(Boolean, default=False)  # User preference for Ollama optimization mode
     created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     last_login = Column(DateTime(timezone=True))
@@ -142,10 +212,40 @@ class UserCreate(BaseModel):
     password: str
     first_name: Optional[str] = None
     last_name: Optional[str] = None
+    
+    @validator('email')
+    def validate_email(cls, v):
+        from .validation import validate_email_field
+        return validate_email_field(v)
+    
+    @validator('username')
+    def validate_username(cls, v):
+        from .validation import validate_username_field
+        return validate_username_field(v)
+    
+    @validator('password')
+    def validate_password(cls, v):
+        from .validation import validate_password_field
+        return validate_password_field(v)
+    
+    @validator('first_name')
+    def validate_first_name(cls, v):
+        from .validation import validate_name_field
+        return validate_name_field(v) if v else v
+    
+    @validator('last_name')
+    def validate_last_name(cls, v):
+        from .validation import validate_name_field
+        return validate_name_field(v) if v else v
 
 class UserLogin(BaseModel):
     email: str
     password: str
+    
+    @validator('email')
+    def validate_email(cls, v):
+        from .validation import validate_email_field
+        return validate_email_field(v)
 
 class UserResponse(BaseModel):
     id: int
@@ -155,6 +255,7 @@ class UserResponse(BaseModel):
     last_name: Optional[str]
     is_active: bool
     subscription_tier: str
+    use_local_ollama: bool
     created_at: datetime
     
     class Config:
@@ -164,6 +265,24 @@ class UserProfileUpdate(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
     email: Optional[str] = None
+    
+    @validator('email')
+    def validate_email(cls, v):
+        from .validation import validate_email_field
+        return validate_email_field(v) if v else v
+    
+    @validator('first_name')
+    def validate_first_name(cls, v):
+        from .validation import validate_name_field
+        return validate_name_field(v) if v else v
+    
+    @validator('last_name')
+    def validate_last_name(cls, v):
+        from .validation import validate_name_field
+        return validate_name_field(v) if v else v
+
+class UserSettingsUpdate(BaseModel):
+    use_local_ollama: Optional[bool] = None
 
 class PasswordChange(BaseModel):
     current_password: str
@@ -202,6 +321,16 @@ class PromptCreate(BaseModel):
     content: str
     parameters: Optional[Dict[str, Any]] = None
     priority: Optional[int] = 5
+    
+    @validator('content')
+    def validate_content(cls, v):
+        from .validation import validate_prompt_field
+        return validate_prompt_field(v)
+    
+    @validator('parameters')
+    def validate_parameters(cls, v):
+        from .validation import validator
+        return validator.sanitize_dict(v) if v else v
 
 class PromptResponse(BaseModel):
     id: int

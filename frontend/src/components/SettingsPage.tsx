@@ -1,10 +1,11 @@
-import { useState } from 'react';
-import { ArrowLeft, Eye, EyeOff, Copy, Plus, Trash2, Key, User, Shield, CreditCard, ExternalLink, BarChart3 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { ArrowLeft, Eye, EyeOff, Copy, Plus, Trash2, Key, User, Shield, CreditCard, ExternalLink, BarChart3, Settings } from 'lucide-react';
 
 interface User {
   id: string;
   email: string;
   name: string;
+  use_local_ollama: boolean;
 }
 
 interface SettingsPageProps {
@@ -36,6 +37,11 @@ const SettingsPage = ({ user, onNavigate }: SettingsPageProps) => {
     currentPassword: '',
     newPassword: '',
     confirmPassword: '',
+  });
+
+  // Settings state
+  const [settingsData, setSettingsData] = useState({
+    use_local_ollama: user.use_local_ollama || false,
   });
 
   // API Keys state
@@ -135,6 +141,43 @@ const SettingsPage = ({ user, onNavigate }: SettingsPageProps) => {
     } catch (error) {
       console.error('Password change failed:', error);
       alert('Failed to change password. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSettingsSave = async () => {
+    setIsLoading(true);
+    
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('Authentication required');
+      }
+
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/users/settings`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          use_local_ollama: settingsData.use_local_ollama
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to update settings');
+      }
+
+      const updatedUser = await response.json();
+      localStorage.setItem('user', JSON.stringify(updatedUser));
+      
+      console.log('Settings updated successfully');
+      alert('Optimization mode settings saved successfully!');
+    } catch (error) {
+      console.error('Settings update failed:', error);
+      alert('Failed to update settings. Please try again.');
     } finally {
       setIsLoading(false);
     }
@@ -310,6 +353,7 @@ const SettingsPage = ({ user, onNavigate }: SettingsPageProps) => {
 
   const tabs = [
     { id: 'profile', label: 'Profile', icon: User },
+    { id: 'preferences', label: 'Preferences', icon: Settings },
     { id: 'security', label: 'Security', icon: Shield },
     { id: 'subscription', label: 'Subscription', icon: CreditCard },
     { id: 'api', label: 'API Keys', icon: Key },
@@ -451,6 +495,117 @@ const SettingsPage = ({ user, onNavigate }: SettingsPageProps) => {
                         </button>
                       </div>
                     </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'preferences' && (
+              <div className="synapse-card">
+                <h2 className="text-xl font-semibold text-synapse-text-bright mb-6">
+                  Optimization Preferences
+                </h2>
+                
+                <div className="space-y-6">
+                  <div className="bg-synapse-surface border border-synapse-border rounded-lg p-6">
+                    <div className="flex justify-between items-start mb-4">
+                      <div className="flex-1">
+                        <h3 className="font-medium text-synapse-text mb-2">
+                          Prompt Optimization Mode
+                        </h3>
+                        <p className="text-sm text-synapse-text-muted mb-4">
+                          Choose how Synapse processes your prompts for optimization before sending to the final API.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      {/* Cloud API Mode (Default) */}
+                      <div className="flex items-start space-x-3">
+                        <input
+                          type="radio"
+                          id="cloud-mode"
+                          name="optimization-mode"
+                          checked={!settingsData.use_local_ollama}
+                          onChange={() => setSettingsData({ ...settingsData, use_local_ollama: false })}
+                          className="mt-1 w-4 h-4 text-synapse-primary"
+                        />
+                        <div className="flex-1">
+                          <label htmlFor="cloud-mode" className="font-medium text-synapse-text cursor-pointer">
+                            Cloud API Mode (Default)
+                          </label>
+                          <p className="text-sm text-synapse-text-muted mt-1">
+                            • Uses GPT-4o-mini for fast, reliable optimization (~$0.0006/request)<br/>
+                            • No local setup required - works immediately<br/>
+                            • 99.9% uptime with automatic scaling<br/>
+                            • Recommended for most users
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Local Ollama Mode */}
+                      <div className="flex items-start space-x-3">
+                        <input
+                          type="radio"
+                          id="ollama-mode"
+                          name="optimization-mode"
+                          checked={settingsData.use_local_ollama}
+                          onChange={() => setSettingsData({ ...settingsData, use_local_ollama: true })}
+                          className="mt-1 w-4 h-4 text-synapse-primary"
+                        />
+                        <div className="flex-1">
+                          <label htmlFor="ollama-mode" className="font-medium text-synapse-text cursor-pointer">
+                            Local Ollama Mode (Advanced)
+                          </label>
+                          <p className="text-sm text-synapse-text-muted mt-1">
+                            • Uses local phi3:mini model for complete privacy<br/>
+                            • Zero per-request costs after setup<br/>
+                            • Requires Ollama installation and model download<br/>
+                            • Best for high-volume users or privacy-focused workflows
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {settingsData.use_local_ollama && (
+                      <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                        <div className="flex items-start space-x-2">
+                          <div className="text-blue-600 mt-0.5">
+                            <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7-4a1 1 0 11-2 0 1 1 0 012 0zM9 9a1 1 0 000 2v3a1 1 0 001 1h1a1 1 0 100-2v-3a1 1 0 00-1-1H9z" clipRule="evenodd" />
+                            </svg>
+                          </div>
+                          <div className="text-sm text-blue-800">
+                            <strong>Local Ollama Setup Required:</strong><br/>
+                            1. Install Ollama: <code className="bg-blue-100 px-1 rounded">curl -fsSL https://ollama.ai/install.sh | sh</code><br/>
+                            2. Download model: <code className="bg-blue-100 px-1 rounded">ollama pull phi3:mini</code><br/>
+                            3. Verify running: <code className="bg-blue-100 px-1 rounded">ollama serve</code>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <p className="text-sm text-synapse-text-muted">
+                        Current mode: <strong>{settingsData.use_local_ollama ? 'Local Ollama' : 'Cloud API'}</strong>
+                      </p>
+                    </div>
+                    <button
+                      onClick={handleSettingsSave}
+                      disabled={isLoading}
+                      className="bg-synapse-primary hover:bg-synapse-primary-hover text-synapse-primary-foreground font-medium py-2 px-4 rounded-lg transition-all duration-200 disabled:opacity-50 flex items-center"
+                    >
+                      {isLoading ? (
+                        <>
+                          <div className="spinner mr-2" />
+                          Saving...
+                        </>
+                      ) : (
+                        'Save Preferences'
+                      )}
+                    </button>
                   </div>
                 </div>
               </div>

@@ -11,7 +11,7 @@ load_dotenv()
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
+from pydantic import BaseModel, validator
 from typing import Optional, Dict, Any, List
 from sqlalchemy.orm import Session
 import psycopg
@@ -26,10 +26,10 @@ from .auth import (
     get_current_user, generate_api_key
 )
 from .database import (
-    get_db, create_tables, 
+    get_db, create_tables, check_database_health,
     PromptCreate, PromptResponse, ResponseCreate, ResponseResponse, 
     FeedbackCreate, FeedbackResponse, UserCreate, UserLogin, UserResponse,
-    UserProfileUpdate, PasswordChange, ApiKeyCreate, ApiKeyResponse, BillingRecordResponse,
+    UserProfileUpdate, UserSettingsUpdate, PasswordChange, ApiKeyCreate, ApiKeyResponse, BillingRecordResponse,
     create_prompt, create_response, create_feedback, 
     get_user_prompts, get_prompt_responses, update_prompt_status,
     get_user_by_email, get_user_by_username, create_user, update_user_profile,
@@ -37,6 +37,8 @@ from .database import (
     revoke_api_key, create_billing_record, get_user_billing_history, User,
     add_user_credits
 )
+from .rate_limiter import rate_limit_middleware, get_rate_limit_stats
+from .security_middleware import SecurityHeadersMiddleware, get_cors_config
 
 async def collect_streaming_response(streaming_response) -> str:
     """Helper function to collect full response from streaming response."""
@@ -103,16 +105,23 @@ async def collect_streaming_response(streaming_response) -> str:
         print(f"Traceback: {traceback.format_exc()}")
         return ""
 
-app = FastAPI(title="SaaS Boilerplate API", version="1.0.0")
+app = FastAPI(title="Synapse AI API", version="1.0.0")
 
-cors_origins = os.getenv("CORS_ORIGIN_URL", "*").split(",")
+# Add security headers middleware
+app.add_middleware(SecurityHeadersMiddleware)
+
+# Enhanced CORS configuration based on environment
+cors_config = get_cors_config()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    **cors_config
 )
+
+# Add rate limiting to critical endpoints
+rate_limited_endpoints = [
+    "POST:/auth/register", "POST:/auth/login", "POST:/auth/forgot-password",
+    "POST:/optimize", "POST:/execute", "PUT:/users/profile", "PUT:/users/password"
+]
 
 @app.on_event("startup")
 async def startup_event():
@@ -127,6 +136,19 @@ async def startup_event():
     
     if openai_api_key or anthropic_api_key:
         await initialize_execution_engine(openai_api_key, anthropic_api_key)
+        
+        # Log hybrid mode configuration
+        use_local_ollama = os.getenv("USE_LOCAL_OLLAMA", "false").lower() == "true"
+        if use_local_ollama:
+            print("🔧 Synapse Optimization: LOCAL OLLAMA MODE")
+            print("   - Template optimization via local phi3:mini model")
+            print("   - Requires Ollama installation and running service")
+            print("   - Zero per-request costs for optimization")
+        else:
+            print("☁️  Synapse Optimization: CLOUD API MODE (Default)")
+            print("   - Template optimization via GPT-4o-mini API")
+            print("   - No local setup required")
+            print("   - ~$0.0006 per optimization request")
     else:
         print("Warning: No API keys found in environment variables. LLM execution will be limited to Ollama only.")
     
@@ -153,6 +175,21 @@ class OptimizeRequest(BaseModel):
     available_tools: Optional[List[str]] = None
     constraints: Optional[List[str]] = None
     word_limit: Optional[int] = None
+    
+    @validator('prompt')
+    def validate_prompt(cls, v):
+        from .validation import validate_prompt_field
+        return validate_prompt_field(v)
+    
+    @validator('parameters')
+    def validate_parameters(cls, v):
+        from .validation import validator
+        return validator.sanitize_dict(v) if v else v
+    
+    @validator('domain_knowledge', 'task_description')
+    def validate_text_fields(cls, v):
+        from .validation import validator
+        return validator.sanitize_text(v, max_length=5000) if v else v
 
 class ExecuteRequest(BaseModel):
     task_id: str
@@ -162,6 +199,21 @@ class ExecuteRequest(BaseModel):
     task_type: Optional[str] = "default"
     payload: Optional[Dict[str, Any]] = None
     user_id: Optional[str] = None
+    
+    @validator('prompt')
+    def validate_prompt(cls, v):
+        from .validation import validate_prompt_field
+        return validate_prompt_field(v)
+    
+    @validator('payload')
+    def validate_payload(cls, v):
+        from .validation import validator
+        return validator.sanitize_dict(v) if v else v
+    
+    @validator('task_id', 'action')
+    def validate_ids(cls, v):
+        from .validation import validator
+        return validator.sanitize_text(v, max_length=100) if v else v
 
 class FeedbackRequest(BaseModel):
     response_id: int
@@ -194,10 +246,51 @@ class ResetPasswordRequest(BaseModel):
 
 @app.get("/healthz")
 async def healthz():
-    return {"status": "ok"}
+    """Health check endpoint with database connectivity check."""
+    db_health = check_database_health()
+    
+    overall_status = "ok" if db_health["status"] == "healthy" else "degraded"
+    
+    return {
+        "status": overall_status,
+        "database": db_health,
+        "timestamp": datetime.utcnow().isoformat(),
+        "version": "1.0.0"
+    }
+
+@app.get("/health/db")
+async def database_health():
+    """Detailed database health check endpoint."""
+    return check_database_health()
+
+@app.get("/admin/rate-limits")
+async def rate_limit_stats():
+    """Get rate limiting statistics (admin endpoint)."""
+    return get_rate_limit_stats()
+
+@app.get("/admin/security-status")
+async def security_status():
+    """Get security configuration status (admin endpoint)."""
+    is_production = os.getenv("ENVIRONMENT", "development").lower() == "production"
+    cors_origins = os.getenv("CORS_ORIGIN_URL", "*")
+    
+    return {
+        "environment": "production" if is_production else "development",
+        "security_headers": "enabled",
+        "cors_policy": "strict" if is_production else "permissive",
+        "cors_origins": cors_origins.split(",") if cors_origins != "*" else ["*"],
+        "rate_limiting": "enabled",
+        "input_validation": "enabled",
+        "ssl_required": is_production,
+        "api_version": "1.0.0"
+    }
 
 @app.post("/auth/register", response_model=TokenResponse)
-async def register(user_data: UserCreate, db: Session = Depends(get_db)):
+async def register(
+    user_data: UserCreate, 
+    db: Session = Depends(get_db),
+    _rate_limit: None = Depends(rate_limit_middleware)
+):
     """Register a new user."""
     existing_user = get_user_by_email(db, user_data.email)
     if existing_user:
@@ -232,7 +325,11 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     )
 
 @app.post("/auth/login", response_model=TokenResponse)
-async def login(user_data: UserLogin, db: Session = Depends(get_db)):
+async def login(
+    user_data: UserLogin, 
+    db: Session = Depends(get_db),
+    _rate_limit: None = Depends(rate_limit_middleware)
+):
     """Login user and return JWT token."""
     user = authenticate_user(db, user_data.email, user_data.password)
     if not user:
@@ -310,6 +407,25 @@ async def change_password(
         )
     
     return {"message": "Password updated successfully"}
+
+@app.put("/users/settings", response_model=UserResponse)
+async def update_user_settings(
+    settings: UserSettingsUpdate,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Update user settings including Ollama mode preference."""
+    if settings.use_local_ollama is not None:
+        current_user.use_local_ollama = settings.use_local_ollama
+        
+        # Log the settings change
+        mode = "LOCAL OLLAMA" if settings.use_local_ollama else "CLOUD API"
+        print(f"User {current_user.email} changed optimization mode to: {mode}")
+    
+    db.commit()
+    db.refresh(current_user)
+    
+    return current_user
 
 @app.delete("/users/account")
 async def delete_account(
@@ -512,7 +628,8 @@ async def get_models():
 async def optimize(
     request: OptimizeRequest, 
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _rate_limit: None = Depends(rate_limit_middleware)
 ):
     """
     Sophisticated optimization endpoint using Synapse Core prompt architecture
@@ -549,60 +666,191 @@ async def optimize(
         synapse_prompt = builder.build(prompt_data)
         stats = builder.get_prompt_stats(synapse_prompt)
         
-        # Step 2: Execute Synapse Core prompt with local LLM to get optimized prompt
+        # Step 2: Execute FULL Synapse Core prompt with optimization LLM to get specialized prompt
+        # HYBRID APPROACH: Use API by default, allow local Ollama as option
         engine = get_execution_engine()
-        local_model = "phi3:mini"  # Use local model for optimization (matches installed model)
         
-        # Create a simpler meta-prompt to instruct the local LLM
-        optimization_instruction = f"""You are an expert prompt engineer. Create a detailed, optimized prompt for the following task:
+        # Configuration for hybrid mode - Check user setting first, then environment variable
+        user_prefers_ollama = current_user.use_local_ollama
+        env_ollama_enabled = os.getenv("USE_LOCAL_OLLAMA", "false").lower() == "true"
+        use_local_ollama = user_prefers_ollama or env_ollama_enabled  # User setting takes precedence
+        
+        local_model = "phi3:mini"
+        optimizer_model = "gpt-4o-mini"  # Cheap, reliable API model for optimization
+        
+        optimization_mode = "local_ollama" if use_local_ollama else "cloud_api"
+        active_model = local_model if use_local_ollama else optimizer_model
+        
+        print(f"DEBUG: User {current_user.email} optimization preference: {'Local Ollama' if user_prefers_ollama else 'Cloud API'}")
+        print(f"DEBUG: Final optimization mode: {optimization_mode}")
+        print(f"DEBUG: Using model: {active_model}")
+        print(f"DEBUG: Synapse prompt length: {len(synapse_prompt)} characters")
+        print(f"DEBUG: Synapse prompt preview: '{synapse_prompt[:300]}...'")
 
-Task: {request.prompt}
-Role: {prompt_data.role}
-Context: {request.task_description or 'General task enhancement'}
-
-Create a specific, actionable prompt that will produce excellent results. Include clear instructions, context, and desired output format. Output only the optimized prompt, nothing else."""
-
-        # Execute with local LLM (Ollama) to get optimized prompt
-        optimized_prompt = ""
-        try:
-            print(f"Executing Synapse Core prompt with local model: {local_model}")
-            
-            # Use Ollama directly instead of the execution engine for better control
-            import httpx
-            async with httpx.AsyncClient(timeout=60.0) as client:  # Increase timeout
-                payload = {
-                    "model": local_model,
-                    "prompt": optimization_instruction,
-                    "stream": False  # Use non-streaming for simplicity and reliability
+        # Execute the COMPLETE Synapse template to get specialized prompt
+        specialized_prompt = ""
+        
+        if use_local_ollama:
+            # Option A: Local Ollama (for advanced users who have it installed)
+            try:
+                print(f"Executing FULL Synapse Core template with local Ollama: {local_model}")
+                
+                import httpx
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    payload = {
+                        "model": local_model,
+                        "prompt": synapse_prompt,  # Send the COMPLETE Synapse v3.0 template
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.7,
+                        "max_tokens": 8000  # Allow for longer specialized prompts
+                    }
                 }
                 
-                print(f"DEBUG: Sending request to Ollama with payload: {payload['model']}")
+                print(f"DEBUG: Sending FULL Synapse template to Ollama")
                 response = await client.post("http://localhost:11434/api/generate", json=payload)
                 
                 print(f"DEBUG: Ollama response status: {response.status_code}")
                 
                 if response.status_code == 200:
                     result = response.json()
-                    optimized_prompt = result.get("response", "")
-                    print(f"DEBUG: Raw Ollama response keys: {list(result.keys())}")
-                    print(f"DEBUG: Full Ollama response: {result}")
-                    print(f"DEBUG: Collected optimized prompt: '{optimized_prompt[:200]}...'")
+                    specialized_prompt = result.get("response", "")
+                    print(f"DEBUG: Local LLM specialized prompt length: {len(specialized_prompt)}")
+                    print(f"DEBUG: Specialized prompt preview: '{specialized_prompt[:300]}...'")
                 else:
                     error_text = await response.atext()
                     print(f"Ollama API error: {response.status_code} - {error_text}")
-                    optimized_prompt = ""
+                    specialized_prompt = ""
+                
+                if not specialized_prompt.strip():
+                    print("Warning: Empty response from local LLM, using fallback specialized prompt")
+                    # Create a much more explicit fallback that clearly instructs the API to WRITE the content, not outline it
+                    specialized_prompt = f"""You are a {prompt_data.role}.
+
+IMPORTANT: You must WRITE and COMPLETE the following task, not provide an outline or instructions.
+
+Task: {request.prompt}
+
+INSTRUCTIONS:
+- WRITE the actual content requested, do not provide templates or outlines
+- If asked to write a report, write a complete report with actual content
+- If asked to write code, write the actual working code
+- If asked to write an email, write the full email content
+- If asked to create content, create the finished content
+- Provide detailed, substantial content that fully completes the request
+- Use your expertise as a {prompt_data.role} to create high-quality, comprehensive content
+
+BEGIN WRITING THE ACTUAL CONTENT NOW:"""
+                else:
+                    print(f"Successfully generated specialized prompt from local LLM ({len(specialized_prompt)} chars)")
+                    # The specialized prompt should be clean output from local LLM processing the Synapse template
+                    # No need to clean it further - this is the specialized prompt the local LLM created
             
-            if not optimized_prompt.strip():
-                print("Warning: Empty response from local LLM, using fallback")
-                optimized_prompt = f"Create a detailed, specific prompt to {request.prompt.lower()}. Include clear instructions, context, and desired output format."
-            else:
-                print(f"Successfully generated optimized prompt ({len(optimized_prompt)} chars)")
-            
-        except Exception as e:
-            print(f"Error: Local LLM optimization failed: {e}")
-            import traceback
-            print(f"Traceback: {traceback.format_exc()}")
-            optimized_prompt = f"Create a detailed, specific prompt to {request.prompt.lower()}. Include clear instructions, context, and desired output format."
+            except Exception as e:
+                print(f"Error: Local LLM Synapse template processing failed: {e}")
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}")
+                specialized_prompt = f"""You are a {prompt_data.role}.
+
+IMPORTANT: You must WRITE and COMPLETE the following task, not provide an outline or instructions.
+
+Task: {request.prompt}
+
+INSTRUCTIONS:
+- WRITE the actual content requested, do not provide templates or outlines
+- If asked to write a report, write a complete report with actual content
+- If asked to write code, write the actual working code
+- If asked to write an email, write the full email content
+- If asked to create content, create the finished content
+- Provide detailed, substantial content that fully completes the request
+- Use your expertise as a {prompt_data.role} to create high-quality, comprehensive content
+
+BEGIN WRITING THE ACTUAL CONTENT NOW:"""
+                print(f"Using fallback specialized prompt ({len(specialized_prompt)} chars)")
+        
+        else:
+            # Option B: Cloud API optimization (default, reliable, no local setup required)
+            try:
+                print(f"Executing FULL Synapse Core template with cloud API: {optimizer_model}")
+                
+                # Create optimization instruction for the API model
+                optimization_instruction = f"""You are Synapse v3.0, an advanced prompt optimization system. 
+
+Your task is to process the following comprehensive Synapse template and create a specialized, optimized prompt for the final LLM to execute.
+
+The template contains:
+- User's original request: "{request.prompt}"
+- Role specification: {prompt_data.role}
+- Tone requirements: {prompt_data.tone}
+- Detailed enhancement framework
+
+INSTRUCTIONS:
+1. Analyze the complete Synapse template structure
+2. Extract the key requirements and optimization guidance
+3. Create a focused, specialized prompt that maintains the user's intent
+4. The specialized prompt should be clear, direct, and actionable for the final LLM
+5. Include the role, tone, and specific task requirements
+6. Make it production-ready for immediate execution
+
+Here is the complete Synapse template to process:
+
+{synapse_prompt}
+
+Now generate the specialized prompt:"""
+
+                # Use the execution engine to process with the optimizer model
+                optimization_response = await engine.execute_with_streaming(
+                    model=optimizer_model,
+                    prompt=optimization_instruction,
+                    parameters={"temperature": 0.3, "max_tokens": 2000}  # Lower temp for consistent optimization
+                )
+                
+                # Collect the specialized prompt from the cloud API
+                specialized_prompt = await collect_streaming_response(optimization_response)
+                print(f"DEBUG: Cloud API specialized prompt length: {len(specialized_prompt)}")
+                print(f"DEBUG: Specialized prompt preview: '{specialized_prompt[:300]}...'")
+                
+                if not specialized_prompt.strip():
+                    print("Warning: Empty response from cloud optimizer, using fallback")
+                    specialized_prompt = f"""You are a {prompt_data.role}.
+
+IMPORTANT: You must WRITE and COMPLETE the following task, not provide an outline or instructions.
+
+Task: {request.prompt}
+
+INSTRUCTIONS:
+- WRITE the actual content requested, do not provide templates or outlines
+- If asked to write a report, write a complete report with actual content
+- If asked to write code, write the actual working code
+- If asked to create content, create the finished content
+- Use your expertise as a {prompt_data.role} to create high-quality, comprehensive content
+- Maintain a {prompt_data.tone} tone throughout
+
+BEGIN WRITING THE ACTUAL CONTENT NOW:"""
+                else:
+                    print(f"Successfully generated specialized prompt from cloud API ({len(specialized_prompt)} chars)")
+                    
+            except Exception as e:
+                print(f"Error: Cloud API optimization failed: {e}")
+                import traceback
+                print(f"Traceback: {traceback.format_exc()}")
+                print("Falling back to direct specialized prompt")
+                specialized_prompt = f"""You are a {prompt_data.role}.
+
+IMPORTANT: You must WRITE and COMPLETE the following task, not provide an outline or instructions.
+
+Task: {request.prompt}
+
+INSTRUCTIONS:
+- WRITE the actual content requested, do not provide templates or outlines
+- If asked to write a report, write a complete report with actual content
+- If asked to write code, write the actual working code
+- If asked to create content, create the finished content
+- Use your expertise as a {prompt_data.role} to create high-quality, comprehensive content
+- Maintain a {prompt_data.tone} tone throughout
+
+BEGIN WRITING THE ACTUAL CONTENT NOW:"""
+                print(f"Using emergency fallback specialized prompt ({len(specialized_prompt)} chars)")
         
         # Step 3: Route optimized prompt to appropriate API LLM for final execution
         # Determine target model based on task type and power level
@@ -612,21 +860,23 @@ Create a specific, actionable prompt that will produce excellent results. Includ
         # Map to actual model
         target_model = select_model(power_level, task_type)
         
-        # Execute the optimized prompt with the target API LLM
+        # Step 3: Execute the specialized prompt (from local LLM) with target API LLM
         final_output = ""
         try:
-            print(f"Executing optimized prompt with target model: {target_model}")
-            print(f"DEBUG: optimized_prompt variable content: '{optimized_prompt[:300]}...'")
+            print(f"Executing SPECIALIZED PROMPT with target API model: {target_model}")
+            print(f"DEBUG: specialized_prompt content: '{specialized_prompt[:300]}...'")
+            print(f"DEBUG: Specialized prompt length: {len(specialized_prompt)} chars")
             
+            # Use the specialized prompt created by local LLM for API execution
             final_streaming_response = await engine.execute_with_streaming(
                 model=target_model,
-                prompt=optimized_prompt,  # Use the optimized prompt from local LLM
+                prompt=specialized_prompt,  # Use the specialized prompt from local LLM
                 parameters={"temperature": 0.7, "max_tokens": 4000}
             )
             
             # Collect the full response from the target API LLM
             print(f"DEBUG: About to collect streaming response from {target_model}")
-            print(f"DEBUG: Optimized prompt being sent: '{optimized_prompt[:200]}...')")
+            print(f"DEBUG: Specialized prompt being sent to API: '{specialized_prompt[:200]}...')")
             final_output = await collect_streaming_response(final_streaming_response)
             print(f"DEBUG: Collected final output: '{final_output[:200]}...'")
             print(f"DEBUG: Final output length: {len(final_output)}")
@@ -639,28 +889,46 @@ Create a specific, actionable prompt that will produce excellent results. Includ
             
         except Exception as e:
             print(f"Error: API LLM execution failed: {e}")
-            final_output = f"Unable to generate final output with {target_model}. Error: {str(e)}"
+            import traceback
+            print(f"API LLM Traceback: {traceback.format_exc()}")
+            final_output = f"""[API Execution Failed]
+
+The API model {target_model} could not generate a response.
+
+Possible causes:
+- API keys not configured
+- Model not accessible  
+- Network connectivity issues
+- Rate limits exceeded
+
+Error: {str(e)}
+
+The specialized prompt was: {specialized_prompt[:200]}..."""
+            print(f"Set fallback final_output ({len(final_output)} chars)")
         
         execution_time_ms = int((time.time() - start_time) * 1000)
         
         response_create = ResponseCreate(
             prompt_id=db_prompt.id,
             user_id=current_user.id,
-            response_type="optimization",
+            response_type="synapse_optimization",
             content={
-                "synapse_core": synapse_prompt,
-                "optimized_prompt": optimized_prompt,
+                "synapse_template": synapse_prompt,
+                "specialized_prompt": specialized_prompt,
                 "final_output": final_output,
                 "target_model": target_model,
-                "optimization_model": local_model,
+                "optimizer_model": active_model,
+                "optimization_mode": optimization_mode,
                 "prompt_stats": stats,
                 "original_request": request.prompt
             },
             response_metadata={
-                "builder_version": "1.0",
+                "builder_version": "3.0",
                 "processing_time_ms": execution_time_ms,
                 "task_type": task_type,
-                "power_level": power_level
+                "power_level": power_level,
+                "optimization_mode": optimization_mode,
+                "flow": f"user->synapse_template->{optimization_mode}->specialized_prompt->api_llm->final_output"
             },
             execution_time_ms=execution_time_ms,
             status_code=200
@@ -669,20 +937,61 @@ Create a specific, actionable prompt that will produce excellent results. Includ
         
         update_prompt_status(db, db_prompt.id, "completed", datetime.utcnow())
         
+        print(f"DEBUG: Final return values check:")
+        print(f"  - synapse_prompt (specialized) length: {len(specialized_prompt)}")
+        print(f"  - final_output length: {len(final_output)}")
+        print(f"  - synapse_prompt preview: '{specialized_prompt[:100]}...'")
+        print(f"  - final_output preview: '{final_output[:100]}...'")
+        
+        # HYBRID FLOW DISPLAY LOGIC:
+        # RULE: Synapse Prompt tab shows the specialized prompt (optimizer output)
+        # RULE: Final Output tab shows the target API LLM response
+        # FALLBACK: If optimizer failed, show full Synapse template in Synapse Prompt tab
+        
+        optimizer_status = "success"
+        
+        # Determine if optimization was successful by checking specialized prompt quality
+        optimization_successful = (
+            specialized_prompt and 
+            len(specialized_prompt.strip()) > 50 and 
+            not specialized_prompt.strip().startswith("You are a") and
+            "BEGIN WRITING THE ACTUAL CONTENT NOW" not in specialized_prompt
+        )
+        
+        if optimization_successful:
+            # Successful optimization: Show the specialized prompt created by optimizer
+            synapse_display = specialized_prompt
+            print(f"DEBUG: ✓ Optimization successful via {optimization_mode}")
+            print(f"DEBUG: Showing specialized prompt ({len(specialized_prompt)} chars)")
+        else:
+            # Optimization failed: Show full Synapse template so user sees the comprehensive structure
+            synapse_display = synapse_prompt
+            optimizer_status = "fallback_used"
+            print(f"DEBUG: ⚠ Optimization failed via {optimization_mode}")
+            print(f"DEBUG: Showing full Synapse template ({len(synapse_prompt)} chars)")
+            
+        # Verify final output exists (this should always be populated by target API LLM)
+        if not final_output or len(final_output.strip()) < 20:
+            print("DEBUG: ⚠ Warning: Final output is unexpectedly short or empty")
+        else:
+            print(f"DEBUG: ✓ Final output ready ({len(final_output)} chars)")
+        
         return {
             "status": "ok",
-            "message": "Full optimization pipeline completed successfully",
+            "message": f"Synapse pipeline executed successfully via {optimization_mode}", 
             "task_id": f"opt_{db_prompt.id}",
             "prompt_id": db_prompt.id,
             "response_id": db_response.id,
-            "synapse_core": synapse_prompt,
-            "synapse_prompt": optimized_prompt,  # This is what frontend expects
-            "final_output": final_output,
+            "synapse_core": synapse_prompt,           # Full Synapse v3.0 template (for debugging)
+            "synapse_prompt": synapse_display,        # Specialized prompt OR full template if optimizer failed
+            "final_output": final_output,             # API LLM response (for Final Output tab)
             "target_model": target_model,
-            "optimization_model": local_model,
+            "optimization_model": active_model,
+            "optimization_mode": optimization_mode,
             "prompt_stats": stats,
             "original_request": request.prompt,
-            "execution_time_ms": execution_time_ms
+            "execution_time_ms": execution_time_ms,
+            "optimizer_status": optimizer_status
         }
         
     except Exception as e:
@@ -704,7 +1013,8 @@ Create a specific, actionable prompt that will produce excellent results. Includ
 async def execute(
     request: ExecuteRequest, 
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    _rate_limit: None = Depends(rate_limit_middleware)
 ):
     """
     Execute endpoint with sophisticated LLM routing and streaming responses.

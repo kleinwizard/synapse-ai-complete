@@ -5,10 +5,11 @@ A sophisticated SaaS application for AI-powered prompt optimization and generati
 ## 🚀 Features
 
 ### Core Functionality
-- **Synapse Core Prompt Builder**: 12-section sophisticated prompt generation system
+- **Synapse Core Prompt Builder**: Advanced prompt generation system with dynamic enhancement levels
+- **Hybrid Optimization**: Cloud API (default) or local Ollama for prompt optimization
 - **LLM Routing Engine**: Tiered model selection (Low/Med/High/Pro) with task-type optimization
 - **Execution Engine**: OpenAI, Anthropic, and Ollama API integration with streaming responses
-- **Local Privacy Mode**: Ollama integration for privacy-focused inference
+- **No Setup Required**: Works out-of-the-box with cloud APIs, optional local Ollama for advanced users
 
 ### User Management
 - **JWT Authentication**: Secure user registration and login
@@ -66,9 +67,38 @@ npm run dev
 Copy `backend/.env.example` to `backend/.env` and configure:
 - `JWT_SECRET_KEY`: Secret key for JWT tokens
 - `DATABASE_URL`: Database connection string
-- `OPENAI_API_KEY`: OpenAI API key (optional)
+- `OPENAI_API_KEY`: OpenAI API key (required for cloud optimization)
 - `ANTHROPIC_API_KEY`: Anthropic API key (optional)
 - `STRIPE_SECRET_KEY`: Stripe secret key (optional)
+- `USE_LOCAL_OLLAMA`: Set to "true" for local Ollama, "false" for cloud API (default: false)
+
+### 🔄 Hybrid Optimization Modes
+
+**Cloud API Mode (Default - No Setup Required)**
+- Uses `gpt-4o-mini` for prompt optimization (~$0.0006/request)
+- No local installation required
+- Reliable 99.9% uptime
+- Automatic scaling
+- Set `USE_LOCAL_OLLAMA=false` (default)
+
+**Local Ollama Mode (Advanced Users)**
+- Uses local `phi3:mini` model for privacy and speed
+- Requires Ollama installation and model download
+- Zero per-request costs after setup
+- Complete data privacy
+- Set `USE_LOCAL_OLLAMA=true`
+
+**Setup Local Ollama (Optional):**
+```bash
+# Install Ollama
+curl -fsSL https://ollama.ai/install.sh | sh
+
+# Pull the phi3:mini model
+ollama pull phi3:mini
+
+# Verify it's running
+curl http://localhost:11434/api/version
+```
 
 ## 📚 API Documentation
 
