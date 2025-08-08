@@ -98,125 +98,118 @@ const Workspace = ({ user, onNavigate }: WorkspaceProps) => {
 
   const selectedLevel = powerLevels.find(level => level.id === selectedPower);
 
+  // Task classification function
+  const classifyTask = (prompt: string): string => {
+    const lowerPrompt = prompt.toLowerCase();
+    
+    // Code-related keywords
+    if (lowerPrompt.includes('code') || lowerPrompt.includes('programming') || 
+        lowerPrompt.includes('function') || lowerPrompt.includes('algorithm') ||
+        lowerPrompt.includes('debug') || lowerPrompt.includes('javascript') ||
+        lowerPrompt.includes('python') || lowerPrompt.includes('react') ||
+        lowerPrompt.includes('api') || lowerPrompt.includes('database')) {
+      return 'code';
+    }
+    
+    // Research-related keywords
+    if (lowerPrompt.includes('research') || lowerPrompt.includes('analyze') ||
+        lowerPrompt.includes('study') || lowerPrompt.includes('investigate') ||
+        lowerPrompt.includes('compare') || lowerPrompt.includes('report') ||
+        lowerPrompt.includes('data') || lowerPrompt.includes('statistics')) {
+      return 'research';
+    }
+    
+    // Writing-related keywords
+    if (lowerPrompt.includes('write') || lowerPrompt.includes('essay') ||
+        lowerPrompt.includes('article') || lowerPrompt.includes('blog') ||
+        lowerPrompt.includes('content') || lowerPrompt.includes('copy')) {
+      return 'writing';
+    }
+    
+    return 'default';
+  };
+
+  // Map frontend power levels to backend power levels
+  const mapPowerLevel = (frontendLevel: string): string => {
+    const mapping = {
+      'low': 'low',
+      'med': 'med', 
+      'high': 'high',
+      'pro': 'pro'
+    };
+    return mapping[frontendLevel as keyof typeof mapping] || 'med';
+  };
+
   const handleGenerate = async () => {
-    if (!userInput.trim()) return;
+    if (!userInput.trim() || !selectedPower) return;
+
+    const selectedLevel = powerLevels.find(level => level.id === selectedPower);
+    if (!selectedLevel) return;
 
     setIsGenerating(true);
+    setActiveTab('output');
     setStreamingText('');
     setFinalOutput('');
     setSynapsePrompt('');
-    setActiveTab('output');
 
     try {
-      // TODO: DEVIN - Replace with actual prompt generation API call
-      // Expected endpoint: POST /api/prompts/generate
-      // Expected payload: { 
-      //   input: string, 
-      //   powerLevel: 'low' | 'med' | 'high' | 'pro',
-      //   userId: string 
-      // }
-      // Expected response: { 
-      //   finalOutput: string, 
-      //   synapsePrompt: string, 
-      //   creditsUsed: number,
-      //   stream?: boolean 
-      // }
-      // For streaming: use EventSource or WebSocket for real-time text updates
-    const mockOutput = `# Enhanced Marketing Email Prompt
-
-## Context & Expertise
-You are a senior marketing strategist with 15+ years of experience in email marketing campaigns. You've successfully increased open rates by 40% and conversion rates by 65% across Fortune 500 companies.
-
-## Objective
-Create a compelling marketing email that drives ${userInput.includes('sales') ? 'sales conversions' : 'user engagement'} for the specified product/service.
-
-## Target Analysis
-- **Primary Audience**: [Define demographics, psychographics, pain points]
-- **Secondary Audience**: [Identify potential secondary markets]
-- **Customer Journey Stage**: [Awareness/Consideration/Decision/Retention]
-
-## Email Structure Framework
-1. **Subject Line Strategy**
-   - Primary: [Action-oriented with urgency]
-   - A/B Test Variant: [Curiosity-driven approach]
-   - Emoji usage: [Strategic placement for mobile optimization]
-
-2. **Opening Hook** (First 50 words)
-   - Personalization token
-   - Immediate value proposition
-   - Problem acknowledgment
-
-3. **Value Proposition Section**
-   - Core benefit statement
-   - Quantified results/outcomes
-   - Social proof integration
-
-4. **Call-to-Action Engineering**
-   - Primary CTA: [Specific action verb]
-   - Secondary CTA: [Lower commitment option]
-   - Visual hierarchy considerations
-
-## Psychological Triggers
-- Scarcity principle implementation
-- Authority positioning
-- Social proof integration
-- Loss aversion techniques
-
-## Technical Specifications
-- Mobile-first design considerations
-- Accessibility requirements
-- A/B testing elements
-- Tracking parameters
-
-## Deliverables
-Provide complete email copy with subject line variations, design notes, and psychological trigger explanations.`;
-
-    const mockSynapsePrompt = `# Synapse Meta-Prompt for Marketing Email Enhancement
-
-## System Context
-Transform the user's basic request "${userInput}" into a comprehensive marketing email creation prompt using advanced prompt engineering techniques.
-
-## Enhancement Framework Applied
-- **Role Definition**: Senior marketing strategist persona
-- **Context Layering**: Industry expertise + specific domain knowledge
-- **Constraint Setting**: Technical and strategic parameters
-- **Output Structuring**: Hierarchical deliverable breakdown
-- **Psychological Framework**: Influence principles integration
-
-## Prompt Engineering Techniques Used
-1. Persona-based role assignment
-2. Multi-layered context establishment
-3. Structured output formatting
-4. Psychological trigger integration
-5. Technical specification inclusion
-6. Deliverable clarity definition
-
-## Quality Assurance Metrics
-- Specificity Level: High
-- Actionability Score: 95%
-- Context Richness: Comprehensive
-- Output Predictability: Structured
-
-This meta-prompt demonstrates how Synapse transforms simple inputs into expert-level instructions through systematic enhancement protocols.`;
-
-      // TODO: DEVIN - Remove this simulation and implement real streaming
-      // For streaming implementation:
-      // 1. Set up EventSource or WebSocket connection
-      // 2. Listen for text chunks and update streamingText state
-      // 3. Handle completion and set final states
-      
-      for (let i = 0; i < mockOutput.length; i += 10) {
-        await new Promise(resolve => setTimeout(resolve, 50));
-        setStreamingText(mockOutput.slice(0, i + 10));
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('Authentication required. Please log in again.');
       }
 
-      setFinalOutput(mockOutput);
-      setSynapsePrompt(mockSynapsePrompt);
-      setCredits(prev => prev - selectedLevel!.cost);
+      // Classify the task type
+      const taskType = classifyTask(userInput);
+      const powerLevel = mapPowerLevel(selectedPower);
+
+      // Call the optimize endpoint
+      const response = await fetch(`${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/optimize`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          prompt: userInput,
+          task_description: `Enhance this ${taskType} prompt with ${powerLevel} level optimization`,
+          role: taskType === 'code' ? 'senior software engineer' : 
+                taskType === 'research' ? 'expert researcher' : 
+                taskType === 'writing' ? 'professional writer' : 'professional assistant',
+          tone: 'helpful and analytical',
+          deliverable_format: 'markdown',
+          parameters: {
+            power_level: powerLevel,
+            task_type: taskType,
+            enhancement_level: selectedPower
+          }
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      
+      // Extract the correct data from the response
+      const optimizedPrompt = data.synapse_prompt || 'No enhanced prompt generated';
+      const finalOutput = data.final_output || 'No final output generated';
+      
+      // Show the final output with streaming effect
+      for (let i = 0; i < finalOutput.length; i += 20) {
+        await new Promise(resolve => setTimeout(resolve, 25));
+        setStreamingText(finalOutput.slice(0, i + 20));
+      }
+
+      // Set the final states
+      setFinalOutput(finalOutput);  // This is the API LLM's response to the optimized prompt
+      setSynapsePrompt(optimizedPrompt);  // This is the optimized prompt created by local LLM
+      setCredits(prev => prev - selectedLevel.cost);
       
     } catch (error) {
       console.error('Prompt generation failed:', error);
-      // TODO: DEVIN - Add proper error handling and user feedback
+      alert(`Error: ${error instanceof Error ? error.message : 'Unknown error occurred'}`);
     } finally {
       setIsGenerating(false);
     }
@@ -282,6 +275,15 @@ This meta-prompt demonstrates how Synapse transforms simple inputs into expert-l
               <p className="text-synapse-text-muted">
                 Enter your basic concept and watch Synapse create expert-level prompts
               </p>
+              
+              {/* TEMPORARY DEMO BUTTON - REMOVE AFTER TESTING */}
+              <button 
+                onClick={() => setCredits(prev => prev + 1000)}
+                className="text-xs bg-red-600 text-white px-2 py-1 rounded"
+                style={{fontSize: '10px'}}
+              >
+                +1000 Demo Credits (TEMP)
+              </button>
             </div>
 
             {/* Power Level Selector */}
@@ -331,6 +333,15 @@ This meta-prompt demonstrates how Synapse transforms simple inputs into expert-l
                 className="synapse-input w-full h-32 resize-none"
               />
             </div>
+
+            {/* Task Classification Display */}
+            {userInput.trim() && (
+              <div className="text-xs text-synapse-text-muted mb-3">
+                Detected task type: <span className="text-synapse-primary font-medium">
+                  {classifyTask(userInput)}
+                </span>
+              </div>
+            )}
 
             {/* Generate Button */}
             <button

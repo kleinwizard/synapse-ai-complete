@@ -14,27 +14,27 @@ logger = logging.getLogger(__name__)
 MODEL_CATALOG: Dict[str, Dict[str, str]] = {
     "low": {
         "code": "claude-3-haiku-20240307",
-        "writing": "gpt-4o-mini-2024-07-18",
-        "research": "gemini-1.5-flash-preview-0514",
-        "default": "gpt-4o-mini-2024-07-18",
+        "writing": "gpt-4o-mini",
+        "research": "gpt-4o-mini",
+        "default": "gpt-4o-mini",
     },
     "med": {
         "code": "claude-3-5-sonnet-20240620",
-        "writing": "gpt-4o-2024-05-13",
-        "research": "gemini-1.5-pro-preview-0514",
+        "writing": "gpt-4o",
+        "research": "claude-3-5-sonnet-20240620",
         "default": "claude-3-5-sonnet-20240620",
     },
     "high": {
-        "code": "claude-3-opus-20240229",
-        "writing": "gpt-4-turbo-2024-04-09",
-        "research": "claude-3-opus-20240229",
-        "default": "claude-3-opus-20240229",
+        "code": "claude-3-5-sonnet-20241022",
+        "writing": "gpt-4o",
+        "research": "claude-3-5-sonnet-20241022",
+        "default": "claude-3-5-sonnet-20241022",
     },
     "pro": {
-        "code": "claude-4.1-opus-20250805",
-        "writing": "gpt-4o-2024-05-13",
-        "research": "gemini-2.5-pro-20250325",
-        "default": "gpt-4o-2024-05-13",
+        "code": "claude-3-5-sonnet-20241022",
+        "writing": "gpt-4o",
+        "research": "claude-3-5-sonnet-20241022",
+        "default": "gpt-4o",
     },
 }
 

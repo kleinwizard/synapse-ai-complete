@@ -2,7 +2,12 @@ import os
 import time
 import hmac
 import hashlib
+import json
 from datetime import datetime, timedelta
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
@@ -29,8 +34,74 @@ from .database import (
     get_user_prompts, get_prompt_responses, update_prompt_status,
     get_user_by_email, get_user_by_username, create_user, update_user_profile,
     update_user_password, delete_user, create_api_key, get_user_api_keys,
-    revoke_api_key, create_billing_record, get_user_billing_history, User
+    revoke_api_key, create_billing_record, get_user_billing_history, User,
+    add_user_credits
 )
+
+async def collect_streaming_response(streaming_response) -> str:
+    """Helper function to collect full response from streaming response."""
+    full_response = ""
+    try:
+        # Handle StreamingResponse body_iterator
+        async for chunk in streaming_response.body_iterator:
+            chunk_str = chunk.decode() if isinstance(chunk, bytes) else str(chunk)
+            
+            # Split by lines and process each line
+            for line in chunk_str.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+                    
+                try:
+                    # Try to parse as JSON (for SSE format)
+                    if line.startswith('data: '):
+                        json_str = line[6:]  # Remove 'data: ' prefix
+                        if json_str.strip() in ['[DONE]', '']:
+                            continue
+                        data = json.loads(json_str)
+                    else:
+                        # Try to parse as plain JSON
+                        data = json.loads(line)
+                    
+                    # Extract text content from different response formats
+                    text_content = ""
+                    
+                    # Ollama format
+                    if 'response' in data:
+                        text_content = data['response']
+                    # OpenAI streaming format
+                    elif 'choices' in data and len(data['choices']) > 0:
+                        choice = data['choices'][0]
+                        if 'delta' in choice and 'content' in choice['delta']:
+                            text_content = choice['delta']['content']
+                        elif 'text' in choice:
+                            text_content = choice['text']
+                    # Anthropic format
+                    elif 'content' in data:
+                        if isinstance(data['content'], list):
+                            text_content = ''.join([item.get('text', '') for item in data['content']])
+                        else:
+                            text_content = data['content']
+                    # Generic text field
+                    elif 'text' in data:
+                        text_content = data['text']
+                    
+                    if text_content:
+                        full_response += text_content
+                        
+                except (json.JSONDecodeError, KeyError, TypeError):
+                    # If not JSON, might be plain text
+                    if line and not line.startswith('data:'):
+                        full_response += line + ' '
+                    continue
+                    
+        return full_response.strip()
+        
+    except Exception as e:
+        print(f"Error collecting streaming response: {e}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        return ""
 
 app = FastAPI(title="SaaS Boilerplate API", version="1.0.0")
 
@@ -144,6 +215,11 @@ async def register(user_data: UserCreate, db: Session = Depends(get_db)):
     
     password_hash = hash_password(user_data.password)
     user = create_user(db, user_data, password_hash)
+    
+    # Give new users 1000 test credits - set directly
+    user.credits = (user.credits or 0) + 1000
+    db.commit()
+    db.refresh(user)
     
     await send_welcome_email(user.email, user.first_name or user.username)
     
@@ -469,8 +545,101 @@ async def optimize(
             additional_context=request.parameters or {}
         )
         
+        # Step 1: Build Synapse Core prompt
         synapse_prompt = builder.build(prompt_data)
         stats = builder.get_prompt_stats(synapse_prompt)
+        
+        # Step 2: Execute Synapse Core prompt with local LLM to get optimized prompt
+        engine = get_execution_engine()
+        local_model = "phi3:mini"  # Use local model for optimization (matches installed model)
+        
+        # Create a simpler meta-prompt to instruct the local LLM
+        optimization_instruction = f"""You are an expert prompt engineer. Create a detailed, optimized prompt for the following task:
+
+Task: {request.prompt}
+Role: {prompt_data.role}
+Context: {request.task_description or 'General task enhancement'}
+
+Create a specific, actionable prompt that will produce excellent results. Include clear instructions, context, and desired output format. Output only the optimized prompt, nothing else."""
+
+        # Execute with local LLM (Ollama) to get optimized prompt
+        optimized_prompt = ""
+        try:
+            print(f"Executing Synapse Core prompt with local model: {local_model}")
+            
+            # Use Ollama directly instead of the execution engine for better control
+            import httpx
+            async with httpx.AsyncClient(timeout=60.0) as client:  # Increase timeout
+                payload = {
+                    "model": local_model,
+                    "prompt": optimization_instruction,
+                    "stream": False  # Use non-streaming for simplicity and reliability
+                }
+                
+                print(f"DEBUG: Sending request to Ollama with payload: {payload['model']}")
+                response = await client.post("http://localhost:11434/api/generate", json=payload)
+                
+                print(f"DEBUG: Ollama response status: {response.status_code}")
+                
+                if response.status_code == 200:
+                    result = response.json()
+                    optimized_prompt = result.get("response", "")
+                    print(f"DEBUG: Raw Ollama response keys: {list(result.keys())}")
+                    print(f"DEBUG: Full Ollama response: {result}")
+                    print(f"DEBUG: Collected optimized prompt: '{optimized_prompt[:200]}...'")
+                else:
+                    error_text = await response.atext()
+                    print(f"Ollama API error: {response.status_code} - {error_text}")
+                    optimized_prompt = ""
+            
+            if not optimized_prompt.strip():
+                print("Warning: Empty response from local LLM, using fallback")
+                optimized_prompt = f"Create a detailed, specific prompt to {request.prompt.lower()}. Include clear instructions, context, and desired output format."
+            else:
+                print(f"Successfully generated optimized prompt ({len(optimized_prompt)} chars)")
+            
+        except Exception as e:
+            print(f"Error: Local LLM optimization failed: {e}")
+            import traceback
+            print(f"Traceback: {traceback.format_exc()}")
+            optimized_prompt = f"Create a detailed, specific prompt to {request.prompt.lower()}. Include clear instructions, context, and desired output format."
+        
+        # Step 3: Route optimized prompt to appropriate API LLM for final execution
+        # Determine target model based on task type and power level
+        task_type = request.parameters.get("task_type", "default")
+        power_level = request.parameters.get("power_level", "standard")
+        
+        # Map to actual model
+        target_model = select_model(power_level, task_type)
+        
+        # Execute the optimized prompt with the target API LLM
+        final_output = ""
+        try:
+            print(f"Executing optimized prompt with target model: {target_model}")
+            print(f"DEBUG: optimized_prompt variable content: '{optimized_prompt[:300]}...'")
+            
+            final_streaming_response = await engine.execute_with_streaming(
+                model=target_model,
+                prompt=optimized_prompt,  # Use the optimized prompt from local LLM
+                parameters={"temperature": 0.7, "max_tokens": 4000}
+            )
+            
+            # Collect the full response from the target API LLM
+            print(f"DEBUG: About to collect streaming response from {target_model}")
+            print(f"DEBUG: Optimized prompt being sent: '{optimized_prompt[:200]}...')")
+            final_output = await collect_streaming_response(final_streaming_response)
+            print(f"DEBUG: Collected final output: '{final_output[:200]}...'")
+            print(f"DEBUG: Final output length: {len(final_output)}")
+            
+            if not final_output.strip():
+                print("Warning: Empty response from target API LLM")
+                final_output = f"The API model {target_model} was unable to generate a response. This may be because the API keys are not configured or the model is not accessible."
+            else:
+                print(f"Successfully generated final output ({len(final_output)} chars)")
+            
+        except Exception as e:
+            print(f"Error: API LLM execution failed: {e}")
+            final_output = f"Unable to generate final output with {target_model}. Error: {str(e)}"
         
         execution_time_ms = int((time.time() - start_time) * 1000)
         
@@ -479,13 +648,19 @@ async def optimize(
             user_id=current_user.id,
             response_type="optimization",
             content={
-                "synapse_prompt": synapse_prompt,
+                "synapse_core": synapse_prompt,
+                "optimized_prompt": optimized_prompt,
+                "final_output": final_output,
+                "target_model": target_model,
+                "optimization_model": local_model,
                 "prompt_stats": stats,
                 "original_request": request.prompt
             },
             response_metadata={
                 "builder_version": "1.0",
-                "processing_time_ms": execution_time_ms
+                "processing_time_ms": execution_time_ms,
+                "task_type": task_type,
+                "power_level": power_level
             },
             execution_time_ms=execution_time_ms,
             status_code=200
@@ -496,14 +671,17 @@ async def optimize(
         
         return {
             "status": "ok",
-            "message": "Synapse Core prompt generated successfully",
+            "message": "Full optimization pipeline completed successfully",
             "task_id": f"opt_{db_prompt.id}",
             "prompt_id": db_prompt.id,
             "response_id": db_response.id,
-            "synapse_prompt": synapse_prompt,
+            "synapse_core": synapse_prompt,
+            "synapse_prompt": optimized_prompt,  # This is what frontend expects
+            "final_output": final_output,
+            "target_model": target_model,
+            "optimization_model": local_model,
             "prompt_stats": stats,
             "original_request": request.prompt,
-            "estimated_processing_time": "5-10 minutes",
             "execution_time_ms": execution_time_ms
         }
         

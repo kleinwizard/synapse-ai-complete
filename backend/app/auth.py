@@ -11,7 +11,11 @@ from jose import JWTError, jwt
 from fastapi import HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from dotenv import load_dotenv
 from .database import get_db, get_user_by_email, get_user_by_id, User
+
+# Load environment variables
+load_dotenv()
 
 JWT_SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_urlsafe(32))
 JWT_ALGORITHM = "HS256"
@@ -31,6 +35,11 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token."""
     to_encode = data.copy()
+    
+    # Ensure 'sub' is a string (JWT requirement)
+    if 'sub' in to_encode and not isinstance(to_encode['sub'], str):
+        to_encode['sub'] = str(to_encode['sub'])
+    
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
     else:
@@ -76,6 +85,7 @@ async def get_current_user(
             detail="Could not validate credentials",
         )
     
+    # Convert user_id to int (it should be a string from JWT)
     try:
         user_id = int(user_id)
     except (ValueError, TypeError):
