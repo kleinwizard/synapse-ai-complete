@@ -13,6 +13,7 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./backups:/backups
+      - db_logs:/var/log/postgresql
     ports:
       - "127.0.0.1:5432:5432"
     healthcheck:
@@ -22,6 +23,28 @@ services:
       retries: 5
     networks:
       - synapse-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+        labels: "service=database,environment=production"
+    command: |
+      postgres
+      -c logging_collector=on
+      -c log_destination=stderr
+      -c log_statement=all
+      -c log_duration=on
+      -c log_min_duration_statement=1000
+      -c log_checkpoints=on
+      -c log_connections=on
+      -c log_disconnections=on
+      -c log_lock_waits=on
+      -c log_temp_files=0
+      -c log_autovacuum_min_duration=0
+      -c log_error_verbosity=verbose
+      -c log_hostname=on
+      -c log_line_prefix='%t [%p]: [%l-1] user=%u,db=%d,app=%a,client=%h '
 
   # Backend API
   api:
@@ -41,6 +64,11 @@ services:
       CORS_ORIGIN_URL: https://${DOMAIN}
       ENVIRONMENT: production
       USE_LOCAL_OLLAMA: false
+      # Enhanced logging configuration
+      LOG_LEVEL: INFO
+      LOG_FORMAT: json
+      LOG_FILE: /app/logs/synapse_ai.log
+      PYTHONUNBUFFERED: 1
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:
@@ -56,6 +84,12 @@ services:
       retries: 3
     networks:
       - synapse-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "200m"
+        max-file: "10"
+        labels: "service=backend,environment=production,component=api"
 
   # Frontend (build and serve)
   frontend:
@@ -64,11 +98,20 @@ services:
       dockerfile: Dockerfile.prod
       args:
         VITE_API_BASE_URL: https://${DOMAIN}/api
+        VITE_ENABLE_LOGGING: "true"
+        VITE_LOG_LEVEL: INFO
+        VITE_LOGGING_ENDPOINT: https://${DOMAIN}/api/logs
     restart: unless-stopped
     ports:
       - "127.0.0.1:3000:80"
     networks:
       - synapse-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+        labels: "service=frontend,environment=production,component=web"
 
   # Nginx Reverse Proxy
   nginx:
@@ -88,14 +131,33 @@ services:
       - frontend
     networks:
       - synapse-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "500m"
+        max-file: "10"
+        labels: "service=nginx,environment=production,component=proxy"
+    environment:
+      - NGINX_ENVSUBST_TEMPLATE_DIR=/etc/nginx/templates
+      - NGINX_ENVSUBST_OUTPUT_DIR=/etc/nginx/conf.d
 
   # Redis for caching and sessions
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru --requirepass ${REDIS_PASSWORD}
+    command: |
+      redis-server 
+      --appendonly yes 
+      --maxmemory 256mb 
+      --maxmemory-policy allkeys-lru 
+      --requirepass ${REDIS_PASSWORD}
+      --loglevel notice
+      --logfile ""
+      --syslog-enabled yes
+      --syslog-ident redis-synapse
     volumes:
       - redis_data:/data
+      - redis_logs:/var/log/redis
     ports:
       - "127.0.0.1:6379:6379"
     healthcheck:
@@ -105,6 +167,36 @@ services:
       retries: 3
     networks:
       - synapse-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "5"
+        labels: "service=redis,environment=production,component=cache"
+
+  # Log aggregation and monitoring (optional)
+  # Uncomment and configure for centralized logging
+  # logstash:
+  #   image: docker.elastic.co/logstash/logstash:8.11.0
+  #   restart: unless-stopped
+  #   volumes:
+  #     - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+  #     - ./logstash/config/logstash.yml:/usr/share/logstash/config/logstash.yml:ro
+  #     - nginx_logs:/var/log/nginx:ro
+  #     - api_logs:/var/log/api:ro
+  #     - db_logs:/var/log/db:ro
+  #   ports:
+  #     - "127.0.0.1:5044:5044"
+  #   environment:
+  #     - XPACK_MONITORING_ENABLED=false
+  #   networks:
+  #     - synapse-network
+  #   logging:
+  #     driver: "json-file"
+  #     options:
+  #       max-size: "100m"
+  #       max-file: "3"
+  #       labels: "service=logstash,environment=production,component=logging"
 
 volumes:
   postgres_data:
@@ -116,6 +208,10 @@ volumes:
   upload_files:
     driver: local
   nginx_logs:
+    driver: local
+  db_logs:
+    driver: local
+  redis_logs:
     driver: local
 
 networks:

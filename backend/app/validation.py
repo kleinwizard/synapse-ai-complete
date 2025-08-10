@@ -11,8 +11,18 @@ from fastapi import HTTPException, status
 from pydantic import BaseModel, validator
 import bleach
 
+from .logging_config import get_logger, security_logger
+
 class InputValidator:
-    """Centralized input validation and sanitization."""
+    """
+    Centralized input validation and sanitization.
+    
+    Updated to reduce false positives on legitimate AI research prompts while
+    maintaining protection against actual security threats.
+    """
+    
+    def __init__(self):
+        self.logger = get_logger('validation')
     
     # Security patterns to detect potentially malicious content
     DANGEROUS_PATTERNS = [
@@ -30,20 +40,32 @@ class InputValidator:
         r'expression\(',  # CSS expressions
     ]
     
-    # SQL injection patterns
+    # SQL injection patterns - Made more specific to avoid false positives on legitimate AI prompts
     SQL_INJECTION_PATTERNS = [
-        r'(?i)\b(union|select|insert|update|delete|drop|create|alter|exec|execute)\b',
-        r'(?i)(\bor\b|\band\b)\s+\w*\s*=\s*\w*',
-        r'[\'";].*(\bor\b|\band\b).*[\'";]',
-        r'(?i)\b(script|alert|confirm|prompt)\s*\(',
+        # Only flag SQL keywords when they appear in suspicious contexts
+        r'(?i)\b(union\s+select|select\s+\*\s+from|drop\s+table|truncate\s+table)\b',
+        r'(?i)\b(exec\s*\(|execute\s*\(|sp_executesql)\b',
+        # SQL injection specific patterns with quotes and operators
+        r'[\'"]\s*(union|select|insert|update|delete|drop)\s+.*[\'"]\s*(;|\-\-)',
+        r'[\'"]\s*;\s*(drop|delete|update|insert)\s+.*[\'"]\s*',
+        # Classic SQL injection patterns
+        r'[\'"]\s*or\s+[\'"]\w*[\'"]\s*=\s*[\'"]\w*[\'"]\s*',
+        r'[\'"]\s*and\s+[\'"]\w*[\'"]\s*=\s*[\'"]\w*[\'"]\s*',
+        r'[\'"]\s*(or|and)\s+1\s*=\s*1\s*[\'"]*',
+        r'[\'"]\s*(or|and)\s+[\'"]*\d+[\'"]*\s*=\s*[\'"]*\d+[\'"]*',
     ]
     
-    # Command injection patterns
+    # Command injection patterns - Made more specific to avoid false positives
     COMMAND_INJECTION_PATTERNS = [
-        r'[;&|`$\(\){}]',  # Shell metacharacters
-        r'(?i)(curl|wget|nc|netcat|telnet|ssh|ftp)',  # Network tools
-        r'(?i)(rm|del|format|fdisk)',  # Destructive commands
-        r'(?i)(cat|type|more|less).*(/etc/|c:\\)',  # File access
+        # Only flag shell metacharacters in suspicious contexts  
+        r'[;&|`]\s*(rm|del|format|curl|wget|nc|sh|bash|cmd|powershell)',
+        r'\$\(.*\)\s*[;&|]',  # Command substitution patterns
+        # Network tools in suspicious contexts
+        r'(?i)(curl|wget|nc|netcat)\s+.*[;&|]',
+        # Destructive commands with paths
+        r'(?i)(rm\s+\-rf|del\s+/[sqf]|format\s+[a-z]:)',
+        # File access with system paths
+        r'(?i)(cat|type|more|less)\s+(/etc/passwd|/etc/shadow|c:\\windows\\system32)',
     ]
     
     @staticmethod
@@ -83,8 +105,7 @@ class InputValidator:
         
         return text.strip()
     
-    @classmethod
-    def detect_malicious_content(cls, text: str) -> List[str]:
+    def detect_malicious_content(self, text: str, content_type: str = "general") -> List[str]:
         """Detect potentially malicious content in text."""
         if not text:
             return []
@@ -92,49 +113,172 @@ class InputValidator:
         threats = []
         text_lower = text.lower()
         
+        # Log the validation attempt
+        self.logger.debug(f"Starting content validation", extra={
+            "event_type": "validation_start",
+            "content_type": content_type,
+            "content_length": len(text),
+            "content_preview": text[:100] + "..." if len(text) > 100 else text
+        })
+        
         # Check for dangerous patterns
-        for pattern in cls.DANGEROUS_PATTERNS:
-            if re.search(pattern, text, re.IGNORECASE | re.DOTALL):
-                threats.append(f"Dangerous pattern detected: {pattern}")
+        for i, pattern in enumerate(self.DANGEROUS_PATTERNS):
+            match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+            if match:
+                threat = f"XSS/Script injection pattern detected"
+                threats.append(threat)
+                
+                # Log the specific threat detection
+                security_logger.log_validation_failure(
+                    content=text,
+                    validation_type="xss_detection",
+                    reason=f"Pattern {i+1}: {pattern} matched: {match.group()[:100]}"
+                )
+                
+                self.logger.warning(f"Malicious content detected: XSS pattern", extra={
+                    "event_type": "threat_detected",
+                    "threat_type": "xss",
+                    "pattern_index": i,
+                    "pattern": pattern,
+                    "matched_content": match.group()[:200],
+                    "content_type": content_type,
+                    "full_content_length": len(text)
+                })
         
         # Check for SQL injection
-        for pattern in cls.SQL_INJECTION_PATTERNS:
-            if re.search(pattern, text, re.IGNORECASE):
-                threats.append(f"Potential SQL injection: {pattern}")
+        for i, pattern in enumerate(self.SQL_INJECTION_PATTERNS):
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                threat = f"SQL injection pattern detected"
+                threats.append(threat)
+                
+                # Log the specific threat detection
+                security_logger.log_validation_failure(
+                    content=text,
+                    validation_type="sql_injection_detection",
+                    reason=f"SQL Pattern {i+1}: {pattern} matched: {match.group()[:100]}"
+                )
+                
+                self.logger.warning(f"Malicious content detected: SQL injection pattern", extra={
+                    "event_type": "threat_detected",
+                    "threat_type": "sql_injection",
+                    "pattern_index": i,
+                    "pattern": pattern,
+                    "matched_content": match.group()[:200],
+                    "content_type": content_type,
+                    "full_content_length": len(text)
+                })
         
         # Check for command injection
-        for pattern in cls.COMMAND_INJECTION_PATTERNS:
-            if re.search(pattern, text, re.IGNORECASE):
-                threats.append(f"Potential command injection: {pattern}")
+        for i, pattern in enumerate(self.COMMAND_INJECTION_PATTERNS):
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                threat = f"Command injection pattern detected"
+                threats.append(threat)
+                
+                # Log the specific threat detection
+                security_logger.log_validation_failure(
+                    content=text,
+                    validation_type="command_injection_detection",
+                    reason=f"Command Pattern {i+1}: {pattern} matched: {match.group()[:100]}"
+                )
+                
+                self.logger.warning(f"Malicious content detected: Command injection pattern", extra={
+                    "event_type": "threat_detected",
+                    "threat_type": "command_injection",
+                    "pattern_index": i,
+                    "pattern": pattern,
+                    "matched_content": match.group()[:200],
+                    "content_type": content_type,
+                    "full_content_length": len(text)
+                })
+        
+        # Log validation completion
+        if threats:
+            self.logger.error(f"Content validation failed with {len(threats)} threats", extra={
+                "event_type": "validation_failed",
+                "content_type": content_type,
+                "threat_count": len(threats),
+                "threats": threats,
+                "content_length": len(text)
+            })
+        else:
+            self.logger.debug(f"Content validation passed", extra={
+                "event_type": "validation_passed",
+                "content_type": content_type,
+                "content_length": len(text)
+            })
         
         return threats
     
-    @classmethod
-    def validate_prompt_content(cls, prompt: str) -> str:
+    def validate_prompt_content(self, prompt: str) -> str:
         """Validate and sanitize prompt content for LLM processing."""
         if not prompt:
+            self.logger.warning("Empty prompt validation attempted", extra={
+                "event_type": "validation_error",
+                "error_type": "empty_prompt"
+            })
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Prompt content cannot be empty"
             )
         
+        self.logger.info("Validating prompt content", extra={
+            "event_type": "prompt_validation",
+            "prompt_length": len(prompt),
+            "prompt_preview": prompt[:200] + "..." if len(prompt) > 200 else prompt
+        })
+        
         # Check for malicious content
-        threats = cls.detect_malicious_content(prompt)
+        threats = self.detect_malicious_content(prompt, content_type="prompt")
         if threats:
+            self.logger.error("Prompt validation failed due to malicious content", extra={
+                "event_type": "prompt_validation_failed",
+                "threats": threats,
+                "prompt_length": len(prompt),
+                "prompt_preview": prompt[:200] + "..." if len(prompt) > 200 else prompt
+            })
+            
+            # Also log as security event
+            security_logger.log_validation_failure(
+                content=prompt,
+                validation_type="prompt_validation",
+                reason=f"Threats detected: {', '.join(threats)}"
+            )
+            
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Potentially malicious content detected: {threats[0]}"
             )
         
         # Sanitize the prompt
-        sanitized = cls.sanitize_text(prompt, max_length=50000)  # Larger limit for prompts
+        try:
+            sanitized = self.sanitize_text(prompt, max_length=50000)  # Larger limit for prompts
+        except HTTPException as e:
+            self.logger.error("Prompt sanitization failed", extra={
+                "event_type": "sanitization_error",
+                "error": str(e.detail),
+                "prompt_length": len(prompt)
+            })
+            raise
         
         # Additional validation for prompts
         if len(sanitized.strip()) < 10:
+            self.logger.warning("Prompt too short after sanitization", extra={
+                "event_type": "validation_error",
+                "error_type": "prompt_too_short",
+                "sanitized_length": len(sanitized.strip())
+            })
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Prompt too short. Minimum 10 characters required."
             )
+        
+        self.logger.info("Prompt validation successful", extra={
+            "event_type": "prompt_validation_success",
+            "original_length": len(prompt),
+            "sanitized_length": len(sanitized)
+        })
         
         return sanitized
     

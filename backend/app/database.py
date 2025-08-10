@@ -3,15 +3,18 @@ Database configuration and SQLAlchemy models for the Synapse AI application.
 """
 
 import os
+import time
 from datetime import datetime
 from typing import Optional, Dict, Any
-from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime, ForeignKey, CheckConstraint, Index, Float, func
+from sqlalchemy import create_engine, Column, Integer, String, Text, Boolean, DateTime, ForeignKey, CheckConstraint, Index, Float, func, event
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session, relationship
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import JSON
 from sqlalchemy.sql import func
 from pydantic import BaseModel, validator
+
+from .logging_config import get_logger, database_logger
 
 # Import validation functions (will be added after validator creation to avoid circular import)
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./synapse_ai.db")
@@ -55,44 +58,266 @@ engine = create_database_engine()
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+# Set up SQLAlchemy event listeners for comprehensive query logging
+query_logger = get_logger('database_queries')
+
+@event.listens_for(engine, "before_cursor_execute")
+def receive_before_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    """Log database query before execution."""
+    context._query_start_time = time.time()
+    
+    # Truncate long queries for logging
+    safe_statement = statement.replace('\n', ' ').replace('\t', ' ')
+    if len(safe_statement) > 1000:
+        safe_statement = safe_statement[:1000] + "..."
+    
+    # Count parameters but don't log sensitive data
+    param_info = {}
+    if parameters:
+        if isinstance(parameters, (list, tuple)):
+            param_info = {"parameter_count": len(parameters), "parameter_type": "positional"}
+        elif isinstance(parameters, dict):
+            param_info = {"parameter_count": len(parameters), "parameter_type": "named"}
+        else:
+            param_info = {"parameter_type": type(parameters).__name__}
+    
+    query_logger.debug(f"Executing database query", extra={
+        "event_type": "db_query_start",
+        "query": safe_statement,
+        "executemany": executemany,
+        **param_info
+    })
+
+@event.listens_for(engine, "after_cursor_execute")
+def receive_after_cursor_execute(conn, cursor, statement, parameters, context, executemany):
+    """Log database query after execution."""
+    execution_time = time.time() - context._query_start_time
+    
+    # Truncate long queries for logging
+    safe_statement = statement.replace('\n', ' ').replace('\t', ' ')
+    if len(safe_statement) > 1000:
+        safe_statement = safe_statement[:1000] + "..."
+    
+    # Get row count if available
+    row_count = cursor.rowcount if hasattr(cursor, 'rowcount') else None
+    
+    query_logger.debug(f"Database query completed", extra={
+        "event_type": "db_query_complete",
+        "query": safe_statement,
+        "execution_time_seconds": execution_time,
+        "row_count": row_count,
+        "executemany": executemany
+    })
+    
+    # Log slow queries as warnings
+    if execution_time > 1.0:  # More than 1 second
+        query_logger.warning(f"Slow database query detected: {execution_time:.2f}s", extra={
+            "event_type": "db_slow_query",
+            "query": safe_statement,
+            "execution_time_seconds": execution_time,
+            "row_count": row_count
+        })
+    
+    # Also log to database logger
+    database_logger.log_query(
+        query=safe_statement,
+        execution_time=execution_time
+    )
+
+@event.listens_for(engine, "handle_error")
+def receive_handle_error(exception_context):
+    """Log database errors."""
+    query_logger.error(f"Database error occurred: {exception_context.original_exception}", extra={
+        "event_type": "db_query_error",
+        "error": str(exception_context.original_exception),
+        "error_type": type(exception_context.original_exception).__name__,
+        "statement": str(exception_context.statement)[:1000] if exception_context.statement else None,
+        "connection_invalidated": exception_context.connection_invalidated
+    })
+
+@event.listens_for(engine, "connect")
+def receive_connect(dbapi_connection, connection_record):
+    """Log database connections."""
+    query_logger.info("Database connection established", extra={
+        "event_type": "db_connection_established",
+        "connection_id": id(dbapi_connection)
+    })
+    
+    database_logger.log_connection_event("connection_established", {
+        "connection_id": id(dbapi_connection)
+    })
+
+@event.listens_for(engine, "checkout")
+def receive_checkout(dbapi_connection, connection_record, connection_proxy):
+    """Log connection pool checkout."""
+    query_logger.debug("Connection checked out from pool", extra={
+        "event_type": "db_connection_checkout",
+        "connection_id": id(dbapi_connection),
+        "pool_size": engine.pool.size() if hasattr(engine.pool, 'size') else None,
+        "checked_out": engine.pool.checkedout() if hasattr(engine.pool, 'checkedout') else None
+    })
+
+@event.listens_for(engine, "checkin")
+def receive_checkin(dbapi_connection, connection_record):
+    """Log connection pool checkin."""
+    query_logger.debug("Connection checked in to pool", extra={
+        "event_type": "db_connection_checkin",
+        "connection_id": id(dbapi_connection),
+        "pool_size": engine.pool.size() if hasattr(engine.pool, 'size') else None,
+        "checked_out": engine.pool.checkedout() if hasattr(engine.pool, 'checkedout') else None
+    })
+
 def get_db():
-    """Get database session with error handling."""
+    """Get database session with comprehensive error handling and logging."""
+    logger = get_logger('database_session')
+    start_time = time.time()
     db = SessionLocal()
+    
     try:
+        logger.debug("Database session created", extra={
+            "event_type": "db_session_created",
+            "connection_pool_size": engine.pool.size() if hasattr(engine.pool, 'size') else None,
+            "checked_in_connections": engine.pool.checkedin() if hasattr(engine.pool, 'checkedin') else None,
+            "checked_out_connections": engine.pool.checkedout() if hasattr(engine.pool, 'checkedout') else None
+        })
+        
         yield db
+        
+        # Log successful session completion
+        session_time = time.time() - start_time
+        logger.debug("Database session completed successfully", extra={
+            "event_type": "db_session_completed",
+            "session_duration_seconds": session_time
+        })
+        
     except Exception as e:
-        # Log database errors
-        print(f"Database session error: {e}")
-        db.rollback()
+        session_time = time.time() - start_time
+        
+        # Log detailed error information
+        logger.error(f"Database session error: {str(e)}", extra={
+            "event_type": "db_session_error",
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "session_duration_seconds": session_time
+        })
+        
+        # Log rollback attempt
+        try:
+            db.rollback()
+            logger.info("Database transaction rolled back successfully", extra={
+                "event_type": "db_rollback_success"
+            })
+        except Exception as rollback_error:
+            logger.error(f"Database rollback failed: {str(rollback_error)}", extra={
+                "event_type": "db_rollback_error",
+                "rollback_error": str(rollback_error)
+            })
+        
+        # Also log to database logger
+        database_logger.log_connection_event("session_error", {
+            "error": str(e),
+            "duration_seconds": session_time
+        })
+        
         raise
     finally:
-        db.close()
+        try:
+            db.close()
+            logger.debug("Database session closed", extra={
+                "event_type": "db_session_closed"
+            })
+        except Exception as close_error:
+            logger.warning(f"Error closing database session: {str(close_error)}", extra={
+                "event_type": "db_session_close_error",
+                "error": str(close_error)
+            })
 
 def check_database_health() -> dict:
-    """Check database connectivity and health."""
+    """Check database connectivity and health with comprehensive logging."""
+    logger = get_logger('database_health')
+    start_time = time.time()
+    
     try:
+        logger.debug("Starting database health check", extra={
+            "event_type": "db_health_check_start",
+            "database_url_type": "postgresql" if DATABASE_URL.startswith("postgresql") else "sqlite"
+        })
+        
         db = SessionLocal()
         
         # Test basic connectivity
-        db.execute(func.now() if DATABASE_URL.startswith("postgresql") else "SELECT 1")
+        query = func.now() if DATABASE_URL.startswith("postgresql") else "SELECT 1"
+        query_start = time.time()
+        result_set = db.execute(query)
+        query_time = time.time() - query_start
+        
+        # Log the query execution
+        database_logger.log_query(
+            query=str(query),
+            execution_time=query_time
+        )
+        
+        logger.debug("Database connectivity test passed", extra={
+            "event_type": "db_connectivity_test_passed",
+            "query_execution_time_seconds": query_time
+        })
+        
+        # Get connection pool info
+        pool_info = {}
+        if hasattr(engine.pool, 'size'):
+            pool_info.update({
+                "pool_size": engine.pool.size(),
+                "pool_checked_in": engine.pool.checkedin() if hasattr(engine.pool, 'checkedin') else None,
+                "pool_checked_out": engine.pool.checkedout() if hasattr(engine.pool, 'checkedout') else None,
+            })
         
         # Get connection info
+        health_check_time = time.time() - start_time
         result = {
             "status": "healthy",
             "database_type": "postgresql" if DATABASE_URL.startswith("postgresql") else "sqlite",
-            "pool_size": engine.pool.size() if hasattr(engine.pool, 'size') else None,
-            "pool_checked_in": engine.pool.checkedin() if hasattr(engine.pool, 'checkedin') else None,
-            "pool_checked_out": engine.pool.checkedout() if hasattr(engine.pool, 'checkedout') else None,
+            "health_check_duration_seconds": health_check_time,
+            "connectivity_test_duration_seconds": query_time,
+            **pool_info
         }
+        
+        logger.info("Database health check completed successfully", extra={
+            "event_type": "db_health_check_success",
+            "health_check_duration_seconds": health_check_time,
+            **pool_info
+        })
+        
+        # Log to database logger
+        database_logger.log_connection_event("health_check_success", {
+            "duration_seconds": health_check_time,
+            "pool_info": pool_info
+        })
         
         db.close()
         return result
         
     except Exception as e:
+        health_check_time = time.time() - start_time
+        
+        logger.error(f"Database health check failed: {str(e)}", extra={
+            "event_type": "db_health_check_failed",
+            "error": str(e),
+            "error_type": type(e).__name__,
+            "health_check_duration_seconds": health_check_time
+        })
+        
+        # Log to database logger
+        database_logger.log_connection_event("health_check_failed", {
+            "error": str(e),
+            "duration_seconds": health_check_time
+        })
+        
         return {
             "status": "unhealthy",
             "error": str(e),
-            "database_type": "postgresql" if DATABASE_URL.startswith("postgresql") else "sqlite"
+            "error_type": type(e).__name__,
+            "database_type": "postgresql" if DATABASE_URL.startswith("postgresql") else "sqlite",
+            "health_check_duration_seconds": health_check_time
         }
 
 class User(Base):

@@ -8,6 +8,13 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Initialize logging FIRST before other imports
+from .logging_config import setup_logging, get_logger, request_context
+
+setup_logging()
+logger = get_logger('main')
+
 from fastapi import FastAPI, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
@@ -39,6 +46,7 @@ from .database import (
 )
 from .rate_limiter import rate_limit_middleware, get_rate_limit_stats
 from .security_middleware import SecurityHeadersMiddleware, get_cors_config
+from .logging_middleware import LoggingMiddleware
 
 async def collect_streaming_response(streaming_response) -> str:
     """Helper function to collect full response from streaming response."""
@@ -107,6 +115,9 @@ async def collect_streaming_response(streaming_response) -> str:
 
 app = FastAPI(title="Synapse AI API", version="1.0.0")
 
+# Add logging middleware FIRST to capture all requests
+app.add_middleware(LoggingMiddleware)
+
 # Add security headers middleware
 app.add_middleware(SecurityHeadersMiddleware)
 
@@ -125,43 +136,109 @@ rate_limited_endpoints = [
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize execution engine and database on startup."""
-    create_tables()
-    print("Database tables initialized successfully.")
+    """Initialize execution engine and database on startup with comprehensive logging."""
+    logger.info("Starting Synapse AI application initialization", extra={
+        "event_type": "app_startup_start",
+        "app_version": "1.0.0"
+    })
     
-    openai_api_key = os.getenv("OPENAI_API_KEY")
-    anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
-    stripe_secret_key = os.getenv("STRIPE_SECRET_KEY")
-    sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
-    
-    if openai_api_key or anthropic_api_key:
-        await initialize_execution_engine(openai_api_key, anthropic_api_key)
+    try:
+        # Initialize database
+        create_tables()
+        logger.info("Database tables initialized successfully", extra={
+            "event_type": "database_init_success"
+        })
         
-        # Log hybrid mode configuration
-        use_local_ollama = os.getenv("USE_LOCAL_OLLAMA", "false").lower() == "true"
-        if use_local_ollama:
-            print("🔧 Synapse Optimization: LOCAL OLLAMA MODE")
-            print("   - Template optimization via local phi3:mini model")
-            print("   - Requires Ollama installation and running service")
-            print("   - Zero per-request costs for optimization")
+        # Check API keys
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
+        stripe_secret_key = os.getenv("STRIPE_SECRET_KEY")
+        sendgrid_api_key = os.getenv("SENDGRID_API_KEY")
+        
+        # Log API key availability (without exposing the keys)
+        logger.info("API key availability check", extra={
+            "event_type": "api_keys_check",
+            "has_openai_key": bool(openai_api_key),
+            "has_anthropic_key": bool(anthropic_api_key),
+            "has_stripe_key": bool(stripe_secret_key),
+            "has_sendgrid_key": bool(sendgrid_api_key)
+        })
+        
+        # Initialize LLM execution engine
+        if openai_api_key or anthropic_api_key:
+            await initialize_execution_engine(openai_api_key, anthropic_api_key)
+            
+            # Log hybrid mode configuration
+            use_local_ollama = os.getenv("USE_LOCAL_OLLAMA", "false").lower() == "true"
+            
+            logger.info("LLM execution engine initialized", extra={
+                "event_type": "llm_engine_init_success",
+                "has_openai": bool(openai_api_key),
+                "has_anthropic": bool(anthropic_api_key),
+                "local_ollama_mode": use_local_ollama
+            })
+            
+            if use_local_ollama:
+                print("🔧 Synapse Optimization: LOCAL OLLAMA MODE")
+                print("   - Template optimization via local phi3:mini model")
+                print("   - Requires Ollama installation and running service")
+                print("   - Zero per-request costs for optimization")
+            else:
+                print("☁️  Synapse Optimization: CLOUD API MODE (Default)")
+                print("   - Template optimization via GPT-4o-mini API")
+                print("   - No local setup required")
+                print("   - ~$0.0006 per optimization request")
         else:
-            print("☁️  Synapse Optimization: CLOUD API MODE (Default)")
-            print("   - Template optimization via GPT-4o-mini API")
-            print("   - No local setup required")
-            print("   - ~$0.0006 per optimization request")
-    else:
-        print("Warning: No API keys found in environment variables. LLM execution will be limited to Ollama only.")
+            logger.warning("No OpenAI or Anthropic API keys found", extra={
+                "event_type": "llm_engine_init_warning",
+                "limitation": "LLM execution limited to Ollama only"
+            })
+            print("Warning: No API keys found in environment variables. LLM execution will be limited to Ollama only.")
+        
+        # Initialize Stripe
+        if stripe_secret_key:
+            stripe.api_key = stripe_secret_key
+            logger.info("Stripe payment system initialized", extra={
+                "event_type": "stripe_init_success"
+            })
+            print("Stripe initialized successfully.")
+        else:
+            logger.warning("No Stripe secret key found", extra={
+                "event_type": "stripe_init_warning",
+                "limitation": "Billing functionality will be limited"
+            })
+            print("Warning: No Stripe secret key found. Billing functionality will be limited.")
+        
+        # Initialize SendGrid
+        if sendgrid_api_key:
+            logger.info("SendGrid email system initialized", extra={
+                "event_type": "sendgrid_init_success"
+            })
+            print("SendGrid initialized successfully.")
+        else:
+            logger.warning("No SendGrid API key found", extra={
+                "event_type": "sendgrid_init_warning",
+                "limitation": "Email functionality will be limited"
+            })
+            print("Warning: No SendGrid API key found. Email functionality will be limited.")
+        
+        logger.info("Synapse AI application startup completed successfully", extra={
+            "event_type": "app_startup_success",
+            "initialized_systems": {
+                "database": True,
+                "llm_engine": bool(openai_api_key or anthropic_api_key),
+                "stripe": bool(stripe_secret_key),
+                "sendgrid": bool(sendgrid_api_key)
+            }
+        })
     
-    if stripe_secret_key:
-        stripe.api_key = stripe_secret_key
-        print("Stripe initialized successfully.")
-    else:
-        print("Warning: No Stripe secret key found. Billing functionality will be limited.")
-    
-    if sendgrid_api_key:
-        print("SendGrid initialized successfully.")
-    else:
-        print("Warning: No SendGrid API key found. Email functionality will be limited.")
+    except Exception as e:
+        logger.error(f"Application startup failed: {str(e)}", extra={
+            "event_type": "app_startup_failed",
+            "error": str(e),
+            "error_type": type(e).__name__
+        })
+        raise
 
 class OptimizeRequest(BaseModel):
     prompt: str
@@ -662,11 +739,11 @@ async def optimize(
             additional_context=request.parameters or {}
         )
         
-        # Step 1: Build Synapse Core prompt
-        synapse_prompt = builder.build(prompt_data)
-        stats = builder.get_prompt_stats(synapse_prompt)
+        # Step 1: Build guidelines-based optimization instructions for GPT-4o
+        optimization_instructions = builder.build(prompt_data)
+        stats = builder.get_prompt_stats(optimization_instructions)
         
-        # Step 2: Execute FULL Synapse Core prompt with optimization LLM to get specialized prompt
+        # Step 2: Execute optimization instructions with GPT-4o to create specialized prompt
         # HYBRID APPROACH: Use API by default, allow local Ollama as option
         engine = get_execution_engine()
         
@@ -684,22 +761,22 @@ async def optimize(
         print(f"DEBUG: User {current_user.email} optimization preference: {'Local Ollama' if user_prefers_ollama else 'Cloud API'}")
         print(f"DEBUG: Final optimization mode: {optimization_mode}")
         print(f"DEBUG: Using model: {active_model}")
-        print(f"DEBUG: Synapse prompt length: {len(synapse_prompt)} characters")
-        print(f"DEBUG: Synapse prompt preview: '{synapse_prompt[:300]}...'")
+        print(f"DEBUG: Optimization instructions length: {len(optimization_instructions)} characters")
+        print(f"DEBUG: Optimization instructions preview: '{optimization_instructions[:300]}...'")
 
-        # Execute the COMPLETE Synapse template to get specialized prompt
+        # Execute the guidelines-based optimization instructions to get specialized prompt
         specialized_prompt = ""
         
         if use_local_ollama:
             # Option A: Local Ollama (for advanced users who have it installed)
             try:
-                print(f"Executing FULL Synapse Core template with local Ollama: {local_model}")
+                print(f"Executing guidelines-based optimization instructions with local Ollama: {local_model}")
                 
                 import httpx
                 async with httpx.AsyncClient(timeout=120.0) as client:
                     payload = {
                         "model": local_model,
-                        "prompt": synapse_prompt,  # Send the COMPLETE Synapse v3.0 template
+                        "prompt": optimization_instructions,  # Send the guidelines-based optimization instructions
                     "stream": False,
                     "options": {
                         "temperature": 0.7,
@@ -707,7 +784,7 @@ async def optimize(
                     }
                 }
                 
-                print(f"DEBUG: Sending FULL Synapse template to Ollama")
+                print(f"DEBUG: Sending guidelines-based optimization instructions to Ollama")
                 response = await client.post("http://localhost:11434/api/generate", json=payload)
                 
                 print(f"DEBUG: Ollama response status: {response.status_code}")
@@ -771,43 +848,21 @@ BEGIN WRITING THE ACTUAL CONTENT NOW:"""
         else:
             # Option B: Cloud API optimization (default, reliable, no local setup required)
             try:
-                print(f"Executing FULL Synapse Core template with cloud API: {optimizer_model}")
+                print(f"Executing guidelines-based optimization instructions with cloud API: {optimizer_model}")
                 
-                # Create optimization instruction for the API model
-                optimization_instruction = f"""You are Synapse v3.0, an advanced prompt optimization system. 
-
-Your task is to process the following comprehensive Synapse template and create a specialized, optimized prompt for the final LLM to execute.
-
-The template contains:
-- User's original request: "{request.prompt}"
-- Role specification: {prompt_data.role}
-- Tone requirements: {prompt_data.tone}
-- Detailed enhancement framework
-
-INSTRUCTIONS:
-1. Analyze the complete Synapse template structure
-2. Extract the key requirements and optimization guidance
-3. Create a focused, specialized prompt that maintains the user's intent
-4. The specialized prompt should be clear, direct, and actionable for the final LLM
-5. Include the role, tone, and specific task requirements
-6. Make it production-ready for immediate execution
-
-Here is the complete Synapse template to process:
-
-{synapse_prompt}
-
-Now generate the specialized prompt:"""
-
+                # The optimization_instructions already contain the comprehensive guidelines and user request
+                # No need to create a wrapper - send them directly to GPT-4o
+                
                 # Use the execution engine to process with the optimizer model
                 optimization_response = await engine.execute_with_streaming(
                     model=optimizer_model,
-                    prompt=optimization_instruction,
+                    prompt=optimization_instructions,  # Send the guidelines-based instructions directly
                     parameters={"temperature": 0.3, "max_tokens": 2000}  # Lower temp for consistent optimization
                 )
                 
-                # Collect the specialized prompt from the cloud API
+                # Collect the specialized prompt created by GPT-4o using our guidelines
                 specialized_prompt = await collect_streaming_response(optimization_response)
-                print(f"DEBUG: Cloud API specialized prompt length: {len(specialized_prompt)}")
+                print(f"DEBUG: Cloud API optimized prompt length: {len(specialized_prompt)}")
                 print(f"DEBUG: Specialized prompt preview: '{specialized_prompt[:300]}...'")
                 
                 if not specialized_prompt.strip():
@@ -828,7 +883,7 @@ INSTRUCTIONS:
 
 BEGIN WRITING THE ACTUAL CONTENT NOW:"""
                 else:
-                    print(f"Successfully generated specialized prompt from cloud API ({len(specialized_prompt)} chars)")
+                    print(f"Successfully generated optimized prompt from cloud API using guidelines ({len(specialized_prompt)} chars)")
                     
             except Exception as e:
                 print(f"Error: Cloud API optimization failed: {e}")
@@ -911,9 +966,9 @@ The specialized prompt was: {specialized_prompt[:200]}..."""
         response_create = ResponseCreate(
             prompt_id=db_prompt.id,
             user_id=current_user.id,
-            response_type="synapse_optimization",
+            response_type="guidelines_optimization",
             content={
-                "synapse_template": synapse_prompt,
+                "optimization_instructions": optimization_instructions,
                 "specialized_prompt": specialized_prompt,
                 "final_output": final_output,
                 "target_model": target_model,
@@ -928,7 +983,7 @@ The specialized prompt was: {specialized_prompt[:200]}..."""
                 "task_type": task_type,
                 "power_level": power_level,
                 "optimization_mode": optimization_mode,
-                "flow": f"user->synapse_template->{optimization_mode}->specialized_prompt->api_llm->final_output"
+                "flow": f"user->guidelines_instructions->{optimization_mode}->optimized_prompt->api_llm->final_output"
             },
             execution_time_ms=execution_time_ms,
             status_code=200
@@ -938,15 +993,15 @@ The specialized prompt was: {specialized_prompt[:200]}..."""
         update_prompt_status(db, db_prompt.id, "completed", datetime.utcnow())
         
         print(f"DEBUG: Final return values check:")
-        print(f"  - synapse_prompt (specialized) length: {len(specialized_prompt)}")
+        print(f"  - optimized_prompt length: {len(specialized_prompt)}")
         print(f"  - final_output length: {len(final_output)}")
-        print(f"  - synapse_prompt preview: '{specialized_prompt[:100]}...'")
+        print(f"  - optimized_prompt preview: '{specialized_prompt[:100]}...'")
         print(f"  - final_output preview: '{final_output[:100]}...'")
         
-        # HYBRID FLOW DISPLAY LOGIC:
-        # RULE: Synapse Prompt tab shows the specialized prompt (optimizer output)
+        # GUIDELINES-BASED FLOW DISPLAY LOGIC:
+        # RULE: Synapse Prompt tab shows the optimized prompt (GPT-4o output using guidelines)
         # RULE: Final Output tab shows the target API LLM response
-        # FALLBACK: If optimizer failed, show full Synapse template in Synapse Prompt tab
+        # FALLBACK: If optimization failed, show the optimization instructions in Synapse Prompt tab
         
         optimizer_status = "success"
         
@@ -959,16 +1014,16 @@ The specialized prompt was: {specialized_prompt[:200]}..."""
         )
         
         if optimization_successful:
-            # Successful optimization: Show the specialized prompt created by optimizer
+            # Successful optimization: Show the optimized prompt created by GPT-4o using guidelines
             synapse_display = specialized_prompt
             print(f"DEBUG: ✓ Optimization successful via {optimization_mode}")
-            print(f"DEBUG: Showing specialized prompt ({len(specialized_prompt)} chars)")
+            print(f"DEBUG: Showing optimized prompt ({len(specialized_prompt)} chars)")
         else:
-            # Optimization failed: Show full Synapse template so user sees the comprehensive structure
-            synapse_display = synapse_prompt
+            # Optimization failed: Show the optimization instructions so user sees the guidelines
+            synapse_display = optimization_instructions
             optimizer_status = "fallback_used"
             print(f"DEBUG: ⚠ Optimization failed via {optimization_mode}")
-            print(f"DEBUG: Showing full Synapse template ({len(synapse_prompt)} chars)")
+            print(f"DEBUG: Showing optimization instructions ({len(optimization_instructions)} chars)")
             
         # Verify final output exists (this should always be populated by target API LLM)
         if not final_output or len(final_output.strip()) < 20:
@@ -978,12 +1033,12 @@ The specialized prompt was: {specialized_prompt[:200]}..."""
         
         return {
             "status": "ok",
-            "message": f"Synapse pipeline executed successfully via {optimization_mode}", 
+            "message": f"Guidelines-based optimization executed successfully via {optimization_mode}", 
             "task_id": f"opt_{db_prompt.id}",
             "prompt_id": db_prompt.id,
             "response_id": db_response.id,
-            "synapse_core": synapse_prompt,           # Full Synapse v3.0 template (for debugging)
-            "synapse_prompt": synapse_display,        # Specialized prompt OR full template if optimizer failed
+            "optimization_instructions": optimization_instructions,  # Guidelines-based instructions (for debugging)
+            "synapse_prompt": synapse_display,        # Optimized prompt OR optimization instructions if failed
             "final_output": final_output,             # API LLM response (for Final Output tab)
             "target_model": target_model,
             "optimization_model": active_model,

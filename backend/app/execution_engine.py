@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from typing import Dict, Any, AsyncGenerator, Optional, Union
 from functools import lru_cache
 import httpx
@@ -18,7 +19,10 @@ import anthropic
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
-logger = logging.getLogger(__name__)
+from .logging_config import get_logger, api_logger
+
+logger = get_logger('execution_engine')
+api_call_logger = get_logger('api_calls')
 
 response_cache: Dict[str, str] = {}
 
@@ -130,7 +134,7 @@ class ExecutionEngine:
     async def _stream_openai_response(self, model: str, prompt: str, 
                                     parameters: Dict[str, Any]) -> AsyncGenerator[str, None]:
         """
-        Stream response from OpenAI API.
+        Stream response from OpenAI API with comprehensive logging.
         
         Args:
             model: OpenAI model identifier
@@ -141,7 +145,41 @@ class ExecutionEngine:
             str: Response chunks
         """
         if not self.openai_client:
+            logger.error("OpenAI client not initialized", extra={
+                "event_type": "api_call_error",
+                "provider": "openai",
+                "model": model,
+                "error": "Client not initialized"
+            })
             raise HTTPException(status_code=500, detail="OpenAI client not initialized")
+        
+        start_time = time.time()
+        request_data = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+            "max_tokens": parameters.get("max_tokens", 2000),
+            "temperature": parameters.get("temperature", 0.7)
+        }
+        
+        # Log API call start
+        api_logger.log_api_call(
+            provider="openai",
+            model=model,
+            endpoint="chat/completions",
+            request_data=request_data,
+            success=None,  # Will be updated
+            execution_time=None
+        )
+        
+        logger.info(f"Starting OpenAI API call: {model}", extra={
+            "event_type": "api_call_start",
+            "provider": "openai",
+            "model": model,
+            "prompt_length": len(prompt),
+            "parameters": parameters,
+            "stream": True
+        })
         
         try:
             messages = [{"role": "user", "content": prompt}]
@@ -154,12 +192,92 @@ class ExecutionEngine:
                 temperature=parameters.get("temperature", 0.7)
             )
             
+            total_tokens = 0
+            response_chunks = []
+            chunk_count = 0
+            
+            logger.debug("OpenAI stream established", extra={
+                "event_type": "api_stream_start",
+                "provider": "openai",
+                "model": model
+            })
+            
             async for chunk in stream:
+                chunk_count += 1
                 if chunk.choices[0].delta.content:
-                    yield chunk.choices[0].delta.content
+                    content = chunk.choices[0].delta.content
+                    response_chunks.append(content)
+                    
+                    # Log every 10th chunk for performance monitoring
+                    if chunk_count % 10 == 0:
+                        logger.debug(f"OpenAI streaming progress: chunk {chunk_count}", extra={
+                            "event_type": "api_stream_progress",
+                            "provider": "openai",
+                            "model": model,
+                            "chunk_count": chunk_count,
+                            "current_response_length": len(''.join(response_chunks))
+                        })
+                    
+                    yield content
+                    
+                # Track token usage if available
+                if hasattr(chunk, 'usage') and chunk.usage:
+                    total_tokens = chunk.usage.total_tokens
+            
+            # Log successful completion
+            execution_time = time.time() - start_time
+            full_response = ''.join(response_chunks)
+            
+            response_data = {
+                "response_length": len(full_response),
+                "chunk_count": chunk_count,
+                "total_tokens": total_tokens
+            }
+            
+            logger.info(f"OpenAI API call completed successfully", extra={
+                "event_type": "api_call_success",
+                "provider": "openai",
+                "model": model,
+                "execution_time_seconds": execution_time,
+                "response_length": len(full_response),
+                "chunk_count": chunk_count,
+                "total_tokens": total_tokens
+            })
+            
+            # Log final API call result
+            api_logger.log_api_call(
+                provider="openai",
+                model=model,
+                endpoint="chat/completions",
+                request_data=request_data,
+                response_data=response_data,
+                execution_time=execution_time,
+                success=True
+            )
                     
         except Exception as e:
-            logger.error(f"OpenAI API error: {str(e)}")
+            execution_time = time.time() - start_time
+            
+            logger.error(f"OpenAI API error: {str(e)}", extra={
+                "event_type": "api_call_error",
+                "provider": "openai",
+                "model": model,
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "execution_time_seconds": execution_time
+            })
+            
+            # Log failed API call
+            api_logger.log_api_call(
+                provider="openai",
+                model=model,
+                endpoint="chat/completions",
+                request_data=request_data,
+                execution_time=execution_time,
+                success=False,
+                error=str(e)
+            )
+            
             raise HTTPException(status_code=500, detail=f"OpenAI API error: {str(e)}")
     
     async def _stream_anthropic_response(self, model: str, prompt: str, 

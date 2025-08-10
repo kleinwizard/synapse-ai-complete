@@ -5,9 +5,9 @@ import json
 
 @dataclass
 class PromptData:
-    """Enhanced data structure for Synapse v4.0 prompt building"""
+    """Enhanced data structure for Synapse v3.0 prompt building"""
     user_goal: str  # Keep for backward compatibility
-    raw_user_prompt: str = ""  # New v4.0 field
+    raw_user_prompt: str = ""  # New v3.0 field
     domain_knowledge: str = ""
     role: str = "professional assistant"
     tone: str = "helpful and analytical"
@@ -52,18 +52,10 @@ class SynapsePromptBuilder:
         
         # Comprehensive prompt engineering guidelines
         self.guidelines = self._load_comprehensive_guidelines()
-        
-        # Enhancement level complexity mappings
-        self.enhancement_levels = {
-            "low": "Basic optimization with clear instructions",
-            "med": "Moderate optimization with role-based guidance and structured approach", 
-            "high": "Advanced optimization with detailed planning and multi-step reasoning",
-            "pro": "Expert-level optimization with comprehensive prompt engineering techniques"
-        }
     
     def _load_comprehensive_guidelines(self) -> str:
         """Load comprehensive prompt engineering guidelines for GPT-4o optimization"""
-        guidelines = '''# COMPREHENSIVE PROMPT ENGINEERING GUIDELINES
+        return \"\"\"# COMPREHENSIVE PROMPT ENGINEERING GUIDELINES
 
 ## Core Principles
 
@@ -191,26 +183,32 @@ class SynapsePromptBuilder:
 - Context: Sufficient background and domain knowledge
 - Structure: Logical organization and flow
 - Actionability: Immediately executable by target LLM
-- Completeness: All requirements and constraints addressed'''
+- Completeness: All requirements and constraints addressed\"\"\"
         
-        return guidelines
+        # Enhancement level complexity mappings
+        self.enhancement_levels = {
+            "low": "Basic optimization with clear instructions",
+            "med": "Moderate optimization with role-based guidance and structured approach", 
+            "high": "Advanced optimization with detailed planning and multi-step reasoning",
+            "pro": "Expert-level optimization with comprehensive prompt engineering techniques"
+        }
     
     def _assess_complexity(self, prompt: str, context: Dict[str, Any]) -> Tuple[str, Dict]:
         """Automatically assess prompt complexity and determine enhancement level"""
         complexity_score = 0
         factors = {
-            "length": len(prompt.split()) > 15,
+            "length": len(prompt.split()) > 50,
             "technical_terms": any(term in prompt.lower() for term in 
                                  ["algorithm", "optimize", "architecture", "implementation", 
-                                  "analysis", "strategy", "framework", "detailed", "comprehensive"]),
+                                  "analysis", "strategy", "framework"]),
             "multiple_steps": any(word in prompt.lower() for word in 
-                                ["steps", "process", "workflow", "pipeline", "sequence", "plan"]),
+                                ["steps", "process", "workflow", "pipeline", "sequence"]),
             "requires_tools": any(word in prompt.lower() for word in 
-                                ["search", "calculate", "retrieve", "analyze", "data", "research"]),
+                                ["search", "calculate", "retrieve", "analyze", "data"]),
             "specific_format": any(word in prompt.lower() for word in 
-                                 ["json", "xml", "csv", "table", "report", "presentation", "email"]),
+                                 ["json", "xml", "csv", "table", "report", "presentation"]),
             "creative_task": any(word in prompt.lower() for word in 
-                               ["create", "design", "innovate", "brainstorm", "imagine", "write"])
+                               ["create", "design", "innovate", "brainstorm", "imagine"])
         }
         
         # Calculate complexity score
@@ -259,8 +257,8 @@ class SynapsePromptBuilder:
         
         # Build the new guidelines-based instruction for GPT-4o
         timestamp = datetime.now().isoformat()
-        tools_list = "\\n  ".join([f"• {tool}" for tool in (prompt_data.available_tools or self.default_tools)])
-        constraints_list = "\\n  ".join([f"• {constraint}" for constraint in prompt_data.constraints]) if prompt_data.constraints else "• No custom constraints specified"
+        tools_list = "\n  ".join([f"• {tool}" for tool in (prompt_data.available_tools or self.default_tools)])
+        constraints_list = "\n  ".join([f"• {constraint}" for constraint in prompt_data.constraints]) if prompt_data.constraints else "• No custom constraints specified"
         
         # Create the new guidelines-based optimization instruction
         optimization_instruction = f"""You are a prompt optimization expert. Use the comprehensive prompt engineering guidelines below to create an optimized prompt based on the user's request.
@@ -301,7 +299,7 @@ Create the optimized prompt now:"""
     def get_prompt_stats(self, prompt: str) -> Dict[str, Any]:
         """Return comprehensive statistics about the generated optimization instruction"""
         # Analyze the guidelines-based optimization instruction
-        lines = prompt.split('\\n')
+        lines = prompt.split('\n')
         
         # Count guideline sections
         guideline_sections = []
@@ -336,3 +334,4 @@ Create the optimized prompt now:"""
                 "guidelines_comprehensive": len(self.guidelines) > 1000
             }
         }
+
